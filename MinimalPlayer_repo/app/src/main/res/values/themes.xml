@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.MinimalPlayer" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#1A1A2E</item>
+        <item name="colorPrimaryVariant">#16213E</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#0066CC</item>
+        <item name="android:windowBackground">#0F0F0F</item>
+    </style>
+</resources>

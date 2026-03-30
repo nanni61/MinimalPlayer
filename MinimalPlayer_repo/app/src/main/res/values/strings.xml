@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">MinimalPlayer</string>
+    <string name="server_url_hint">URL server (es. http://192.168.1.10:8080)</string>
+    <string name="connect">Connetti</string>
+    <string name="no_files">Nessun file trovato</string>
+    <string name="loading">Caricamento…</string>
+    <string name="error_connection">Errore di connessione</string>
+    <string name="resume">Riprendi</string>
+    <string name="start_over">Ricomincia</string>
+</resources>
