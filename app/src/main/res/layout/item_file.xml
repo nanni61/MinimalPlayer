@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingStart="8dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="10dp"
+    android:paddingBottom="10dp">
+
+    <!-- Icona cliccabile -->
+    <TextView
+        android:id="@+id/tvIcon"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:textSize="32sp"
+        android:gravity="center"
+        android:text="📄"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <!-- Nome + meta: cliccabili -->
+    <LinearLayout
+        android:id="@+id/layoutText"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingStart="12dp"
+        android:gravity="center_vertical"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:clickable="true"
+        android:focusable="true">
+
+        <TextView
+            android:id="@+id/tvName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:singleLine="true"
+            android:ellipsize="middle"
+            android:clickable="false"
+            android:focusable="false" />
+
+        <TextView
+            android:id="@+id/tvMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#666666"
+            android:textSize="12sp"
+            android:layout_marginTop="2dp"
+            android:clickable="false"
+            android:focusable="false" />
+
+    </LinearLayout>
+
+    <!-- Badge resume: NON cliccabile -->
+    <TextView
+        android:id="@+id/tvResume"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="▶ riprendere"
+        android:textColor="#0066CC"
+        android:textSize="11sp"
+        android:visibility="gone"
+        android:clickable="false"
+        android:focusable="false" />
+
+</LinearLayout>
