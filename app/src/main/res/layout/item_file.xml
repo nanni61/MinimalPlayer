@@ -7,9 +7,11 @@
     android:paddingStart="8dp"
     android:paddingEnd="16dp"
     android:paddingTop="10dp"
-    android:paddingBottom="10dp">
+    android:paddingBottom="10dp"
+    android:clickable="false"
+    android:focusable="false">
 
-    <!-- Icona cliccabile -->
+    <!-- Icona -->
     <TextView
         android:id="@+id/tvIcon"
         android:layout_width="56dp"
@@ -19,9 +21,10 @@
         android:text="📄"
         android:background="?attr/selectableItemBackgroundBorderless"
         android:clickable="true"
-        android:focusable="true" />
+        android:focusable="true"
+        android:longClickable="true" />
 
-    <!-- Nome + meta: cliccabili -->
+    <!-- Nome + formato -->
     <LinearLayout
         android:id="@+id/layoutText"
         android:layout_width="0dp"
@@ -32,7 +35,8 @@
         android:gravity="center_vertical"
         android:background="?attr/selectableItemBackgroundBorderless"
         android:clickable="true"
-        android:focusable="true">
+        android:focusable="true"
+        android:longClickable="true">
 
         <TextView
             android:id="@+id/tvName"
@@ -57,7 +61,7 @@
 
     </LinearLayout>
 
-    <!-- Badge resume: NON cliccabile -->
+    <!-- Badge resume: non cliccabile -->
     <TextView
         android:id="@+id/tvResume"
         android:layout_width="wrap_content"

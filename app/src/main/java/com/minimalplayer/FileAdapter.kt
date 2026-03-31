@@ -32,11 +32,13 @@ class FileAdapter(
         holder.tvName.text = entry.name
 
         if (isRootView) {
+            // Schermata librerie — tap singolo su tutta la riga
             holder.tvIcon.text = "📁"
             holder.itemView.setOnClickListener { onClick(entry) }
             return
         }
 
+        // Imposta icona e stato visione
         if (entry.isDirectory) {
             holder.tvIcon.text = "📁"
             holder.tvMeta?.text = "Cartella"
@@ -68,9 +70,22 @@ class FileAdapter(
             }
         }
 
-        // Icona e testo cliccabili, badge resume no
-        holder.tvIcon.setOnClickListener { onClick(entry) }
-        holder.layoutText?.setOnClickListener { onClick(entry) }
+        if (entry.isDirectory) {
+            // Cartelle: tap singolo su icona e testo
+            holder.tvIcon.setOnClickListener { onClick(entry) }
+            holder.layoutText?.setOnClickListener { onClick(entry) }
+            holder.tvIcon.setOnLongClickListener(null)
+            holder.layoutText?.setOnLongClickListener(null)
+        } else {
+            // Video: tap LUNGO su icona o testo per avviare
+            // Tap singolo non fa nulla — evita avvii accidentali durante lo scroll
+            holder.tvIcon.setOnClickListener(null)
+            holder.layoutText?.setOnClickListener(null)
+            holder.tvIcon.setOnLongClickListener { onClick(entry); true }
+            holder.layoutText?.setOnLongClickListener { onClick(entry); true }
+        }
+
+        // La riga non è mai cliccabile direttamente
         holder.itemView.setOnClickListener(null)
         holder.itemView.isClickable = false
     }
