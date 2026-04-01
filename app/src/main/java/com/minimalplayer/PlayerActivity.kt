@@ -1,4 +1,3 @@
-
 package com.minimalplayer
 
 import java.io.File
@@ -30,8 +29,7 @@ class PlayerActivity {
     fun displaySubtitles(subtitleFile: File?) {
         if (subtitleFile != null) {
             val subtitlesContent = subtitleFile.readText()
-            println("Sottotitoli caricati: 
-$subtitlesContent")
+            println("Sottotitoli caricati: \n$subtitlesContent")
             // Aggiungi qui la logica per visualizzare i sottotitoli nel tuo player video
         } else {
             println("Nessun sottotitolo trovato per questo video.")

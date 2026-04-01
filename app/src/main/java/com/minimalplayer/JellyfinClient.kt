@@ -1,10 +1,17 @@
-
 package com.minimalplayer
 
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
+
+data class FileEntry(
+    val name: String,
+    val url: String,
+    val isDirectory: Boolean,
+    val size: Long = -1,
+    val jellyfinId: String = ""
+)
 
 data class SubtitleTrack(
     val index: Int,
