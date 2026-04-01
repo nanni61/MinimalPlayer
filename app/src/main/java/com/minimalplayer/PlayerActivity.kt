@@ -2,6 +2,7 @@ package com.minimalplayer
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -16,6 +17,8 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -35,6 +38,8 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var gestureDetector: GestureDetector
 
     private var player: ExoPlayer? = null
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+
     private var videoUrl = ""
     private var startPosition = 0L
     private var jellyfinItemId = ""
@@ -42,10 +47,12 @@ class PlayerActivity : AppCompatActivity() {
     private var jellyfinBaseUrl = ""
 
     private var subtitleTracks = listOf<SubtitleTrack>()
-    private var currentSubtitleIndex = -1
+    private var currentSubtitleIndex = -1  // -1 = off
 
-    private val maxVolumeBoost = 2.0f
-    private var currentVolumeMultiplier = 1.0f
+    // Volume boost: LoudnessEnhancer lavora in milliBel (100 mB = +1 dB)
+    // 0 dB = volume normale, fino a +10 dB (~215% percepito)
+    private val maxBoostMb = 1000  // +10 dB massimo
+    private var currentBoostMb = 0
 
     private val hudHandler = Handler(Looper.getMainLooper())
     private val hudRunnable = object : Runnable {
@@ -57,7 +64,7 @@ class PlayerActivity : AppCompatActivity() {
     private var seekVelocityActive = false
     private var seekLastX = 0f
     private var seekLastTime = 0L
-    private var seekAccumulator = 0L  // ms accumulati
+    private var seekAccumulator = 0L
 
     private var gestureStartX = 0f
     private var gestureStartY = 0f
@@ -129,11 +136,13 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        val subtitleConfigs = subtitles.map { track ->
+        val subtitleConfigs = subtitles.mapIndexed { listIdx, track ->
             MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(track.url))
                 .setMimeType(MimeTypes.APPLICATION_SUBRIP)
                 .setLanguage(track.language)
                 .setLabel(track.title)
+                // ID univoco per TrackSelectionOverride — usiamo l'indice Jellyfin
+                .setId("sub_${track.index}_$listIdx")
                 .setSelectionFlags(0)
                 .build()
         }
@@ -151,6 +160,7 @@ class PlayerActivity : AppCompatActivity() {
                 binding.playerView.controllerShowTimeoutMs = 3000
                 binding.playerView.controllerAutoShow = false
 
+                // Parti con sottotitoli disabilitati
                 exo.trackSelectionParameters = exo.trackSelectionParameters
                     .buildUpon()
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -175,8 +185,12 @@ class PlayerActivity : AppCompatActivity() {
                 exo.prepare()
                 exo.playWhenReady = true
 
+                // Inizializza LoudnessEnhancer sull'audio session di ExoPlayer
                 exo.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
+                        if (state == Player.STATE_READY && loudnessEnhancer == null) {
+                            setupLoudnessEnhancer(exo.audioSessionId)
+                        }
                         if (state == Player.STATE_ENDED) {
                             resumeManager.markWatched(videoUrl)
                             finish()
@@ -186,24 +200,80 @@ class PlayerActivity : AppCompatActivity() {
             }
     }
 
+    // ── LoudnessEnhancer ──────────────────────────────────────────────────────
+
+    private fun setupLoudnessEnhancer(audioSessionId: Int) {
+        try {
+            loudnessEnhancer?.release()
+            loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply {
+                setTargetGain(0)  // 0 mB = nessun boost all'inizio
+                enabled = true
+            }
+        } catch (e: Exception) {
+            // Alcuni device non supportano LoudnessEnhancer — ignora silenziosamente
+            loudnessEnhancer = null
+        }
+    }
+
     // ── Sottotitoli ───────────────────────────────────────────────────────────
 
     private fun cycleSubtitles() {
         if (subtitleTracks.isEmpty()) return
         currentSubtitleIndex++
         if (currentSubtitleIndex >= subtitleTracks.size) currentSubtitleIndex = -1
+        applySubtitleSelection()
+    }
+
+    private fun applySubtitleSelection() {
         val exo = player ?: return
+
         if (currentSubtitleIndex == -1) {
+            // Disabilita tutti i sottotitoli
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
             showOverlay("⬜ Sub off")
-        } else {
-            val track = subtitleTracks[currentSubtitleIndex]
+            return
+        }
+
+        // Abilita e seleziona la traccia specifica tramite TrackSelectionOverride
+        val tracks = exo.currentTracks
+        val targetTrack = subtitleTracks[currentSubtitleIndex]
+
+        // Cerca il TrackGroup corrispondente nella traccia corrente
+        var matchedGroup: TrackGroup? = null
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until group.length) {
+                val format = group.getTrackFormat(i)
+                // Prova a fare match per language e label
+                val langMatch = format.language == targetTrack.language
+                val labelMatch = format.label == targetTrack.title
+                if (langMatch || labelMatch) {
+                    matchedGroup = group.mediaTrackGroup
+                    break
+                }
+            }
+            if (matchedGroup != null) break
+        }
+
+        if (matchedGroup != null) {
+            // Selezione esatta tramite override — ignora preferenza lingua generica
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                .setPreferredTextLanguage(track.language).build()
-            showOverlay("💬 ${track.title}")
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .addOverride(TrackSelectionOverride(matchedGroup, 0))
+                .build()
+        } else {
+            // Fallback: abilita per lingua (comportamento precedente)
+            exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                .setPreferredTextLanguage(targetTrack.language)
+                .build()
         }
+
+        showOverlay("💬 ${targetTrack.title}")
     }
 
     // ─── HUD ───────────────────────────────────────────────────────────────────
@@ -237,7 +307,6 @@ class PlayerActivity : AppCompatActivity() {
                 return true
             }
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                // Doppio tap funziona solo fuori dalla zona centrale
                 val w = binding.root.width
                 val x = e.x
                 if (x < w * 0.33f || x > w * 0.66f) {
@@ -250,8 +319,6 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun setupTouchListener() {
         binding.playerView.setOnTouchListener { _, event ->
-            // Se la barra controlli è visibile e il touch è nella zona inferiore (ultimi 15%),
-            // non intercettare — lascia che i bottoni ricevano il click
             val screenHeight = binding.root.height.toFloat()
             if (binding.playerView.isControllerFullyVisible &&
                 event.y > screenHeight * 0.85f) {
@@ -268,8 +335,7 @@ class PlayerActivity : AppCompatActivity() {
                     gestureType = GestureType.NONE
                     initialVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                     initialBrightness = getCurrentBrightness()
-                    currentVolumeMultiplier = 1.0f
-                    // Reset seek velocità
+                    currentBoostMb = loudnessEnhancer?.targetGain?.toInt() ?: 0
                     seekVelocityActive = false
                     seekAccumulator = player?.currentPosition ?: 0L
                     seekLastX = event.x
@@ -301,7 +367,6 @@ class PlayerActivity : AppCompatActivity() {
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (gestureType == GestureType.SEEK && seekVelocityActive) {
-                        // Applica il seek alla posizione accumulata
                         player?.seekTo(seekAccumulator.coerceIn(0L, player?.duration ?: Long.MAX_VALUE))
                     }
                     seekVelocityActive = false
@@ -313,21 +378,14 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // Seek basato sulla velocità del dito
     private fun handleVelocitySeek(currentX: Float) {
         val now = System.currentTimeMillis()
         val dt = (now - seekLastTime).coerceAtLeast(1L)
         val dx = currentX - seekLastX
-
-        // Velocità in px/ms → converti in ms di video
-        // Più veloce il dito, più si salta (scala: 1px/ms = 5 secondi di video)
-        val velocity = dx / dt  // px/ms
-        val seekDelta = (velocity * 5000L).toLong()  // ms di video per px/ms di velocità
-
+        val velocity = dx / dt
+        val seekDelta = (velocity * 5000L).toLong()
         seekAccumulator = (seekAccumulator + seekDelta).coerceIn(0L, player?.duration ?: Long.MAX_VALUE)
-
         showOverlay(formatDuration(seekAccumulator))
-
         seekLastX = currentX
         seekLastTime = now
     }
@@ -340,18 +398,43 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    // ── Volume con boost reale via LoudnessEnhancer ───────────────────────────
+    //
+    // Zona 0%–100%  → volume sistema (0..maxSystemVolume), LoudnessEnhancer a 0 mB
+    // Zona 100%–200% → volume sistema al massimo, LoudnessEnhancer da 0 a maxBoostMb
+    //
+    // +10 dB (1000 mB) percettivamente raddoppia il volume.
+
     private fun handleVolumeGesture(dy: Float, screenHeight: Float) {
-        val rawTarget = initialVolume + (-dy / screenHeight * maxSystemVolume * maxVolumeBoost)
-        if (rawTarget <= maxSystemVolume) {
-            val target = rawTarget.coerceIn(0f, maxSystemVolume.toFloat()).toInt()
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+        // dy negativo = dito verso l'alto = aumenta volume
+        // Mappatura totale: tutto lo schermo copre 0–200% (due zone da 100%)
+        val totalRange = screenHeight  // tutta l'altezza = 200%
+        val deltaFraction = -dy / totalRange  // positivo = su = +volume
+
+        // Calcola il livello assoluto in una scala 0.0–2.0
+        val initialFraction = initialVolume.toFloat() / maxSystemVolume.toFloat()
+        val initialBoostFraction = (currentBoostMb.toFloat() / maxBoostMb.toFloat())
+        // Livello iniziale combinato su scala 0–2
+        val initialLevel = initialFraction + initialBoostFraction
+        val targetLevel = (initialLevel + deltaFraction * 2f).coerceIn(0f, 2f)
+
+        if (targetLevel <= 1f) {
+            // Zona normale: scala sistema, boost a zero
+            val sysVol = (targetLevel * maxSystemVolume).toInt()
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, sysVol, 0)
+            loudnessEnhancer?.setTargetGain(0)
             player?.volume = 1.0f
-            showOverlay("🔊 ${(target * 100f / maxSystemVolume).toInt()}%")
+            showOverlay("🔊 ${(targetLevel * 100).toInt()}%")
         } else {
+            // Zona boost: sistema al massimo, LoudnessEnhancer aumenta
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxSystemVolume, 0)
-            currentVolumeMultiplier = (rawTarget / maxSystemVolume).coerceIn(1f, maxVolumeBoost)
-            player?.volume = currentVolumeMultiplier
-            showOverlay("🔊 ${(currentVolumeMultiplier * 100).toInt()}% 🔥")
+            player?.volume = 1.0f
+            val boostFraction = targetLevel - 1f  // 0.0–1.0
+            val boostMb = (boostFraction * maxBoostMb).toInt()
+            loudnessEnhancer?.setTargetGain(boostMb)
+            // Mostra percentuale reale: +10dB ≈ 200% percepito
+            val displayPct = 100 + (boostFraction * 100).toInt()
+            showOverlay("🔊 $displayPct% 🔥")
         }
     }
 
@@ -393,7 +476,10 @@ class PlayerActivity : AppCompatActivity() {
         super.onStop()
         saveCurrentPosition()
         hudHandler.removeCallbacks(hudRunnable)
-        player?.release(); player = null
+        loudnessEnhancer?.release()
+        loudnessEnhancer = null
+        player?.release()
+        player = null
     }
 
     private fun saveCurrentPosition() {
