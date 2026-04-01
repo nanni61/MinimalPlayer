@@ -1,3 +1,4 @@
+
 package com.minimalplayer
 
 import java.io.File
@@ -29,7 +30,8 @@ class PlayerActivity {
     fun displaySubtitles(subtitleFile: File?) {
         if (subtitleFile != null) {
             val subtitlesContent = subtitleFile.readText()
-            println("Sottotitoli caricati: \n$subtitlesContent")
+            println("Sottotitoli caricati: 
+$subtitlesContent")
             // Aggiungi qui la logica per visualizzare i sottotitoli nel tuo player video
         } else {
             println("Nessun sottotitolo trovato per questo video.")
@@ -39,7 +41,7 @@ class PlayerActivity {
     // Funzione per caricare i sottotitoli durante la riproduzione
     fun loadSubtitlesAndInit(jellyfinItemId: String, jellyfin: JellyfinClient) {
         // Carica i sottotitoli dal server Jellyfin
-        val tracks = jellyfin.getSubtitles(jellyfinItemId).getOrDefault(emptyList())
+        val tracks = jellyfin.getSubtitles(jellyfinItemId)
         subtitleTracks = tracks
         localSubtitleFiles = tracks.map { track ->
             // Scarica i sottotitoli in cache

@@ -1,3 +1,4 @@
+
 package com.minimalplayer
 
 import okhttp3.OkHttpClient
@@ -20,49 +21,49 @@ data class SubtitleTrack(
     val url: String
 )
 
-fun getSubtitles(itemId: String, baseUrl: String, accessToken: String): Result<List<SubtitleTrack>> {
-    val subtitles = mutableListOf<SubtitleTrack>()
-    try {
+class JellyfinClient(private val baseUrl: String, private val accessToken: String) {
+
+    private val client = OkHttpClient()
+
+    fun getSubtitles(itemId: String): List<SubtitleTrack> {
         val url = "$baseUrl/Videos/$itemId/Subtitles?api_key=$accessToken"
         val request = Request.Builder().url(url).build()
-        val client = OkHttpClient()
         val response = client.newCall(request).execute()
 
         if (response.isSuccessful) {
+            // Process and return subtitle tracks (example)
             val jsonResponse = JSONObject(response.body?.string() ?: "{}")
             val tracks = jsonResponse.getJSONArray("subtitles")
+            val subtitleTracks = mutableListOf<SubtitleTrack>()
+
             for (i in 0 until tracks.length()) {
                 val track = tracks.getJSONObject(i)
-                val subUrl = "$baseUrl/Videos/$itemId/${track.getString("id")}/Stream.srt?api_key=$accessToken"
-                subtitles.add(SubtitleTrack(
+                subtitleTracks.add(SubtitleTrack(
                     index = i,
                     language = track.getString("language"),
                     title = track.getString("title"),
-                    url = subUrl
+                    url = track.getString("url")
                 ))
             }
-            return Result.success(subtitles)
-        } else {
-            return Result.failure(Exception("Failed to fetch subtitles"))
+            return subtitleTracks
         }
-    } catch (e: Exception) {
-        return Result.failure(e)
+        return emptyList()
     }
-}
 
-fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
-    try {
-        val client = OkHttpClient()
-        val request = Request.Builder().url(track.url).build()
-        val response = client.newCall(request).execute()
+    fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
+        try {
+            val client = OkHttpClient()
+            val request = Request.Builder().url(track.url).build()
+            val response = client.newCall(request).execute()
 
-        if (response.isSuccessful) {
-            val subtitleFile = File(cacheDir, "${track.index}_${track.language}.srt")
-            subtitleFile.writeText(response.body?.string() ?: "")
-            return subtitleFile
+            if (response.isSuccessful) {
+                val subtitleFile = File(cacheDir, "${track.index}_${track.language}.srt")
+                subtitleFile.writeText(response.body?.string() ?: "")
+                return subtitleFile
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-    } catch (e: Exception) {
-        e.printStackTrace()
+        return null
     }
-    return null
 }
