@@ -5,6 +5,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 data class FileEntry(
@@ -160,7 +161,7 @@ class JellyfinClient {
         return "$baseUrl/Videos/$itemId/stream?static=true&api_key=$accessToken"
     }
 
-    // ── Sottotitoli ───────────────────────────────────────────────────────────
+    // ── Sottotitoli: lista tracce ─────────────────────────────────────────────
 
     fun getSubtitles(itemId: String): Result<List<SubtitleTrack>> {
         return try {
@@ -192,16 +193,8 @@ class JellyfinClient {
                 val language = stream.optString("Language", "und")
                 val title = stream.optString("DisplayTitle",
                     stream.optString("Title", language))
-                val isExternal = stream.optBoolean("IsExternal", false)
 
-                // URL sottotitolo SRT via API Jellyfin
-                val subUrl = if (isExternal) {
-                    // File esterno (.srt) — scaricabile direttamente
-                    "$baseUrl/Videos/$itemId/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
-                } else {
-                    // Traccia embedded — Jellyfin la converte in SRT al volo
-                    "$baseUrl/Videos/$itemId/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
-                }
+                val subUrl = "$baseUrl/Videos/$itemId/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
 
                 subtitles.add(SubtitleTrack(
                     index = index,
@@ -213,7 +206,35 @@ class JellyfinClient {
 
             Result.success(subtitles)
         } catch (e: Exception) {
-            Result.success(emptyList()) // Se fallisce, niente sottotitoli — non blocca il video
+            Result.success(emptyList())
+        }
+    }
+
+    // ── Sottotitoli: download su file locale ──────────────────────────────────
+    //
+    // Scarica l'SRT da Jellyfin (con autenticazione) e lo salva in cacheDir.
+    // Restituisce il File locale, oppure null se il download fallisce.
+    // Il chiamante è responsabile di cancellare i file dopo l'uso.
+
+    fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
+        return try {
+            val request = Request.Builder()
+                .url(track.url)
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return null
+
+            val bytes = response.body?.bytes() ?: return null
+            if (bytes.isEmpty()) return null
+
+            // Nome file univoco: sub_{index}_{language}.srt
+            val destFile = File(cacheDir, "sub_${track.index}_${track.language}.srt")
+            destFile.writeBytes(bytes)
+            destFile
+        } catch (e: Exception) {
+            null
         }
     }
 }

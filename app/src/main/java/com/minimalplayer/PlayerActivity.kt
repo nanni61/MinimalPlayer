@@ -26,6 +26,7 @@ import com.minimalplayer.databinding.ActivityPlayerBinding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
@@ -46,11 +47,13 @@ class PlayerActivity : AppCompatActivity() {
     private var jellyfinToken = ""
     private var jellyfinBaseUrl = ""
 
+    // subtitleTracks = tracce originali da Jellyfin
+    // localSubtitleFiles = file SRT scaricati in cache (stessa lunghezza, null se fallito)
     private var subtitleTracks = listOf<SubtitleTrack>()
+    private var localSubtitleFiles = listOf<File?>()
     private var currentSubtitleIndex = -1  // -1 = off
 
-    // Volume boost: LoudnessEnhancer lavora in milliBel (100 mB = +1 dB)
-    // 0 dB = volume normale, fino a +10 dB (~215% percepito)
+    // Volume boost via LoudnessEnhancer (milliBel, 100 mB = +1 dB)
     private val maxBoostMb = 1000  // +10 dB massimo
     private var currentBoostMb = 0
 
@@ -105,26 +108,59 @@ class PlayerActivity : AppCompatActivity() {
         hudHandler.post(hudRunnable)
     }
 
+    // ── Caricamento sottotitoli + avvio player ────────────────────────────────
+    //
+    // 1. Chiede a Jellyfin la lista delle tracce sottotitoli
+    // 2. Scarica ogni SRT in cache locale (con autenticazione OkHttp)
+    // 3. Passa a ExoPlayer gli URI locali file:// — nessun problema di auth
+
     private fun loadSubtitlesAndInit() {
         if (jellyfinItemId.isEmpty() || jellyfinToken.isEmpty()) {
-            initPlayer(emptyList()); return
+            initPlayer(emptyList(), emptyList()); return
         }
         lifecycleScope.launch {
-            val tracks = withContext(Dispatchers.IO) {
-                val jellyfin = JellyfinClient()
-                jellyfin.baseUrl = jellyfinBaseUrl
-                jellyfin.accessToken = jellyfinToken
-                jellyfin.userId = ""
-                jellyfin.getSubtitles(jellyfinItemId).getOrDefault(emptyList())
+            val (tracks, localFiles) = withContext(Dispatchers.IO) {
+                val jellyfin = JellyfinClient().also {
+                    it.baseUrl = jellyfinBaseUrl
+                    it.accessToken = jellyfinToken
+                    it.userId = ""
+                }
+                val tracks = jellyfin.getSubtitles(jellyfinItemId).getOrDefault(emptyList())
+
+                // Pulisci eventuali SRT residui da sessioni precedenti
+                cleanSubtitleCache()
+
+                // Scarica ogni SRT su disco con autenticazione
+                val localFiles: List<File?> = tracks.map { track ->
+                    jellyfin.downloadSubtitle(track, subtitleCacheDir())
+                }
+                Pair(tracks, localFiles)
             }
             subtitleTracks = tracks
-            initPlayer(tracks)
+            localSubtitleFiles = localFiles
+
+            initPlayer(tracks, localFiles)
+
+            // Mostra CC solo se almeno un SRT è stato scaricato con successo
+            val hasAnySub = localFiles.any { it != null }
             binding.playerView.findViewById<View>(R.id.btnSubtitles)?.visibility =
-                if (tracks.isNotEmpty()) View.VISIBLE else View.GONE
+                if (hasAnySub) View.VISIBLE else View.GONE
         }
     }
 
-    private fun initPlayer(subtitles: List<SubtitleTrack>) {
+    private fun subtitleCacheDir(): File {
+        val dir = File(cacheDir, "subtitles")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun cleanSubtitleCache() {
+        try {
+            subtitleCacheDir().listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {}
+    }
+
+    private fun initPlayer(subtitles: List<SubtitleTrack>, localFiles: List<File?>) {
         val httpDataSourceFactory = DefaultHttpDataSource.Factory().apply {
             setUserAgent("MinimalPlayer/1.0")
             setConnectTimeoutMs(15_000)
@@ -136,16 +172,20 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        val subtitleConfigs = subtitles.mapIndexed { listIdx, track ->
-            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(track.url))
-                .setMimeType(MimeTypes.APPLICATION_SUBRIP)
-                .setLanguage(track.language)
-                .setLabel(track.title)
-                // ID univoco per TrackSelectionOverride — usiamo l'indice Jellyfin
-                .setId("sub_${track.index}_$listIdx")
-                .setSelectionFlags(0)
-                .build()
-        }
+        // SubtitleConfiguration usa URI locali (file://) — nessun header necessario
+        val subtitleConfigs = subtitles.zip(localFiles)
+            .filter { (_, file) -> file != null }
+            .mapIndexed { listIdx, (track, file) ->
+                MediaItem.SubtitleConfiguration.Builder(
+                    android.net.Uri.fromFile(file!!)
+                )
+                    .setMimeType(MimeTypes.APPLICATION_SUBRIP)
+                    .setLanguage(track.language)
+                    .setLabel(track.title)
+                    .setId("sub_${track.index}_$listIdx")
+                    .setSelectionFlags(0)
+                    .build()
+            }
 
         val mediaItem = MediaItem.Builder()
             .setUri(videoUrl)
@@ -166,7 +206,6 @@ class PlayerActivity : AppCompatActivity() {
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                     .build()
 
-                // Bottoni nella barra
                 binding.playerView.findViewById<View>(R.id.btnSubtitles)?.setOnClickListener { cycleSubtitles() }
                 binding.playerView.findViewById<View>(R.id.btnGoToStart)?.setOnClickListener {
                     exo.seekTo(0L)
@@ -185,7 +224,6 @@ class PlayerActivity : AppCompatActivity() {
                 exo.prepare()
                 exo.playWhenReady = true
 
-                // Inizializza LoudnessEnhancer sull'audio session di ExoPlayer
                 exo.addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(state: Int) {
                         if (state == Player.STATE_READY && loudnessEnhancer == null) {
@@ -206,21 +244,29 @@ class PlayerActivity : AppCompatActivity() {
         try {
             loudnessEnhancer?.release()
             loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply {
-                setTargetGain(0)  // 0 mB = nessun boost all'inizio
+                setTargetGain(0)
                 enabled = true
             }
         } catch (e: Exception) {
-            // Alcuni device non supportano LoudnessEnhancer — ignora silenziosamente
             loudnessEnhancer = null
         }
     }
 
-    // ── Sottotitoli ───────────────────────────────────────────────────────────
+    // ── Selezione sottotitoli ─────────────────────────────────────────────────
 
     private fun cycleSubtitles() {
         if (subtitleTracks.isEmpty()) return
-        currentSubtitleIndex++
-        if (currentSubtitleIndex >= subtitleTracks.size) currentSubtitleIndex = -1
+        // Salta le tracce per cui il download è fallito
+        var attempts = 0
+        do {
+            currentSubtitleIndex++
+            if (currentSubtitleIndex >= subtitleTracks.size) currentSubtitleIndex = -1
+            attempts++
+        } while (
+            currentSubtitleIndex != -1 &&
+            localSubtitleFiles.getOrNull(currentSubtitleIndex) == null &&
+            attempts <= subtitleTracks.size
+        )
         applySubtitleSelection()
     }
 
@@ -228,7 +274,6 @@ class PlayerActivity : AppCompatActivity() {
         val exo = player ?: return
 
         if (currentSubtitleIndex == -1) {
-            // Disabilita tutti i sottotitoli
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
@@ -236,20 +281,15 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
 
-        // Abilita e seleziona la traccia specifica tramite TrackSelectionOverride
-        val tracks = exo.currentTracks
         val targetTrack = subtitleTracks[currentSubtitleIndex]
+        val tracks = exo.currentTracks
 
-        // Cerca il TrackGroup corrispondente nella traccia corrente
         var matchedGroup: TrackGroup? = null
         for (group in tracks.groups) {
             if (group.type != C.TRACK_TYPE_TEXT) continue
             for (i in 0 until group.length) {
                 val format = group.getTrackFormat(i)
-                // Prova a fare match per language e label
-                val langMatch = format.language == targetTrack.language
-                val labelMatch = format.label == targetTrack.title
-                if (langMatch || labelMatch) {
+                if (format.language == targetTrack.language || format.label == targetTrack.title) {
                     matchedGroup = group.mediaTrackGroup
                     break
                 }
@@ -258,14 +298,12 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         if (matchedGroup != null) {
-            // Selezione esatta tramite override — ignora preferenza lingua generica
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
                 .addOverride(TrackSelectionOverride(matchedGroup, 0))
                 .build()
         } else {
-            // Fallback: abilita per lingua (comportamento precedente)
             exo.trackSelectionParameters = exo.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -398,41 +436,28 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // ── Volume con boost reale via LoudnessEnhancer ───────────────────────────
-    //
-    // Zona 0%–100%  → volume sistema (0..maxSystemVolume), LoudnessEnhancer a 0 mB
-    // Zona 100%–200% → volume sistema al massimo, LoudnessEnhancer da 0 a maxBoostMb
-    //
-    // +10 dB (1000 mB) percettivamente raddoppia il volume.
+    // ── Volume: zona 0-100% sistema, zona 100-200% LoudnessEnhancer ──────────
 
     private fun handleVolumeGesture(dy: Float, screenHeight: Float) {
-        // dy negativo = dito verso l'alto = aumenta volume
-        // Mappatura totale: tutto lo schermo copre 0–200% (due zone da 100%)
-        val totalRange = screenHeight  // tutta l'altezza = 200%
-        val deltaFraction = -dy / totalRange  // positivo = su = +volume
-
-        // Calcola il livello assoluto in una scala 0.0–2.0
+        val totalRange = screenHeight
+        val deltaFraction = -dy / totalRange
         val initialFraction = initialVolume.toFloat() / maxSystemVolume.toFloat()
-        val initialBoostFraction = (currentBoostMb.toFloat() / maxBoostMb.toFloat())
-        // Livello iniziale combinato su scala 0–2
+        val initialBoostFraction = currentBoostMb.toFloat() / maxBoostMb.toFloat()
         val initialLevel = initialFraction + initialBoostFraction
         val targetLevel = (initialLevel + deltaFraction * 2f).coerceIn(0f, 2f)
 
         if (targetLevel <= 1f) {
-            // Zona normale: scala sistema, boost a zero
             val sysVol = (targetLevel * maxSystemVolume).toInt()
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, sysVol, 0)
             loudnessEnhancer?.setTargetGain(0)
             player?.volume = 1.0f
             showOverlay("🔊 ${(targetLevel * 100).toInt()}%")
         } else {
-            // Zona boost: sistema al massimo, LoudnessEnhancer aumenta
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxSystemVolume, 0)
             player?.volume = 1.0f
-            val boostFraction = targetLevel - 1f  // 0.0–1.0
+            val boostFraction = targetLevel - 1f
             val boostMb = (boostFraction * maxBoostMb).toInt()
             loudnessEnhancer?.setTargetGain(boostMb)
-            // Mostra percentuale reale: +10dB ≈ 200% percepito
             val displayPct = 100 + (boostFraction * 100).toInt()
             showOverlay("🔊 $displayPct% 🔥")
         }
@@ -480,6 +505,7 @@ class PlayerActivity : AppCompatActivity() {
         loudnessEnhancer = null
         player?.release()
         player = null
+        cleanSubtitleCache()
     }
 
     private fun saveCurrentPosition() {
