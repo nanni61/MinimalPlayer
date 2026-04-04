@@ -1,10 +1,12 @@
-
 package com.minimalplayer
 
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 data class FileEntry(
     val name: String,
@@ -21,49 +23,218 @@ data class SubtitleTrack(
     val url: String
 )
 
-class JellyfinClient(private val baseUrl: String, private val accessToken: String) {
+class JellyfinClient {
 
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
 
-    fun getSubtitles(itemId: String): List<SubtitleTrack> {
-        val url = "$baseUrl/Videos/$itemId/Subtitles?api_key=$accessToken"
-        val request = Request.Builder().url(url).build()
-        val response = client.newCall(request).execute()
+    var baseUrl = ""
+    var accessToken = ""
+    var userId = ""
 
-        if (response.isSuccessful) {
-            // Process and return subtitle tracks (example)
-            val jsonResponse = JSONObject(response.body?.string() ?: "{}")
-            val tracks = jsonResponse.getJSONArray("subtitles")
-            val subtitleTracks = mutableListOf<SubtitleTrack>()
+    private val deviceId = "MinimalPlayer-Android-001"
 
-            for (i in 0 until tracks.length()) {
-                val track = tracks.getJSONObject(i)
-                subtitleTracks.add(SubtitleTrack(
-                    index = i,
-                    language = track.getString("language"),
-                    title = track.getString("title"),
-                    url = track.getString("url")
-                ))
-            }
-            return subtitleTracks
+    private fun authHeader(): String {
+        return if (accessToken.isEmpty()) {
+            """MediaBrowser Client="MinimalPlayer", Device="Android", DeviceId="$deviceId", Version="1.0""""
+        } else {
+            """MediaBrowser Client="MinimalPlayer", Device="Android", DeviceId="$deviceId", Version="1.0", Token="$accessToken""""
         }
-        return emptyList()
     }
 
-    fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
-        try {
-            val client = OkHttpClient()
-            val request = Request.Builder().url(track.url).build()
-            val response = client.newCall(request).execute()
+    // ── Autenticazione ─────────────────────────────────────────────────────────
 
-            if (response.isSuccessful) {
-                val subtitleFile = File(cacheDir, "${track.index}_${track.language}.srt")
-                subtitleFile.writeText(response.body?.string() ?: "")
-                return subtitleFile
+    fun authenticate(username: String, password: String): Result<Unit> {
+        return try {
+            val body = JSONObject().apply {
+                put("Username", username)
+                put("Pw", password)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$baseUrl/Users/AuthenticateByName")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("X-Emby-Authorization", authHeader())
+                .header("Content-Type", "application/json")
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                return Result.failure(Exception("Autenticazione fallita: HTTP ${response.code}"))
             }
+
+            val json = JSONObject(response.body?.string() ?: "{}")
+            accessToken = json.getString("AccessToken")
+            userId = json.getJSONObject("User").getString("Id")
+            Result.success(Unit)
         } catch (e: Exception) {
-            e.printStackTrace()
+            Result.failure(e)
         }
-        return null
+    }
+
+    // ── Librerie root ──────────────────────────────────────────────────────────
+
+    fun getViews(): Result<List<FileEntry>> {
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/Users/$userId/Views")
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return Result.failure(Exception("HTTP ${response.code}"))
+
+            val json = JSONObject(response.body?.string() ?: "{}")
+            val items = json.getJSONArray("Items")
+            val entries = mutableListOf<FileEntry>()
+
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                entries.add(FileEntry(
+                    name = item.getString("Name"),
+                    url = "",
+                    isDirectory = true,
+                    jellyfinId = item.getString("Id")
+                ))
+            }
+            Result.success(entries)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ── Contenuto cartella ────────────────────────────────────────────────────
+
+    fun getItems(parentId: String): Result<List<FileEntry>> {
+        return try {
+            val url = "$baseUrl/Users/$userId/Items" +
+                "?ParentId=$parentId" +
+                "&SortBy=SortName" +
+                "&SortOrder=Ascending" +
+                "&Fields=MediaSources,Path" +
+                "&Recursive=false"
+
+            val request = Request.Builder()
+                .url(url)
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return Result.failure(Exception("HTTP ${response.code}"))
+
+            val json = JSONObject(response.body?.string() ?: "{}")
+            val items = json.getJSONArray("Items")
+            val entries = mutableListOf<FileEntry>()
+
+            for (i in 0 until items.length()) {
+                val item = items.getJSONObject(i)
+                val id = item.getString("Id")
+                val name = item.getString("Name")
+                val type = item.optString("Type", "")
+
+                val isDir = type in listOf("Folder", "CollectionFolder", "Series", "Season", "BoxSet")
+                val isVideo = !isDir && type.isNotEmpty()
+
+                if (!isDir && !isVideo) continue
+
+                val streamUrl = if (isVideo) getStreamUrl(id) else ""
+
+                entries.add(FileEntry(
+                    name = name,
+                    url = streamUrl,
+                    isDirectory = isDir,
+                    jellyfinId = id
+                ))
+            }
+
+            Result.success(entries.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ── URL stream diretto ────────────────────────────────────────────────────
+
+    fun getStreamUrl(itemId: String): String {
+        return "$baseUrl/Videos/$itemId/stream?static=true&api_key=$accessToken"
+    }
+
+    // ── Sottotitoli: lista tracce ─────────────────────────────────────────────
+
+    fun getSubtitles(itemId: String): Result<List<SubtitleTrack>> {
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/Videos/$itemId/PlaybackInfo?UserId=$userId")
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return Result.success(emptyList())
+
+            val json = JSONObject(response.body?.string() ?: "{}")
+            val mediaSources = json.optJSONArray("MediaSources") ?: return Result.success(emptyList())
+            if (mediaSources.length() == 0) return Result.success(emptyList())
+
+            val mediaSource = mediaSources.getJSONObject(0)
+            val mediaStreams = mediaSource.optJSONArray("MediaStreams") ?: return Result.success(emptyList())
+
+            val subtitles = mutableListOf<SubtitleTrack>()
+
+            for (i in 0 until mediaStreams.length()) {
+                val stream = mediaStreams.getJSONObject(i)
+                if (stream.optString("Type") != "Subtitle") continue
+
+                val index = stream.optInt("Index", -1)
+                if (index < 0) continue
+
+                val language = stream.optString("Language", "und")
+                val title = stream.optString("DisplayTitle",
+                    stream.optString("Title", language))
+
+                val subUrl = "$baseUrl/Videos/$itemId/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
+
+                subtitles.add(SubtitleTrack(
+                    index = index,
+                    language = language,
+                    title = title,
+                    url = subUrl
+                ))
+            }
+
+            Result.success(subtitles)
+        } catch (e: Exception) {
+            Result.success(emptyList())
+        }
+    }
+
+    // ── Sottotitoli: download su file locale ──────────────────────────────────
+    //
+    // Scarica l'SRT da Jellyfin (con autenticazione) e lo salva in cacheDir.
+    // Restituisce il File locale, oppure null se il download fallisce.
+    // Il chiamante è responsabile di cancellare i file dopo l'uso.
+
+    fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
+        return try {
+            val request = Request.Builder()
+                .url(track.url)
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return null
+
+            val bytes = response.body?.bytes() ?: return null
+            if (bytes.isEmpty()) return null
+
+            // Nome file univoco: sub_{index}_{language}.srt
+            val destFile = File(cacheDir, "sub_${track.index}_${track.language}.srt")
+            destFile.writeBytes(bytes)
+            destFile
+        } catch (e: Exception) {
+            null
+        }
     }
 }
