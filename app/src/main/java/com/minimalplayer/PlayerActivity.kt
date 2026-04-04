@@ -354,33 +354,49 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ─── GESTURE ───────────────────────────────────────────────────────────────
+    //
+    // Schermo diviso in due zone ORIZZONTALI:
+    //
+    //  ┌─────────────────────────────────────────────┐
+    //  │                                             │
+    //  │       ZONA SUPERIORE  (y < 50%)             │  doppio tap → play/pausa
+    //  │                                             │  swipe verticale sx → luminosità
+    //  │                                             │  swipe verticale dx → volume
+    //  ├──────────────────┬──────────────────────────┤
+    //  │  ZONA INF. SX    │    ZONA INF. DX           │
+    //  │  doppio tap -10s │    doppio tap +10s         │  swipe orizzontale → seek velocità
+    //  └──────────────────┴──────────────────────────┘
+    //
+    // Tap singolo ovunque → mostra/nasconde barra controlli
 
     private fun setupGestureDetector() {
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 if (binding.playerView.isControllerFullyVisible) binding.playerView.hideController()
                 else binding.playerView.showController()
                 return true
             }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                val w = binding.root.width
-                val x = e.x
-                when {
-                    // Primo terzo → toggle play/pause
-                    x < w * 0.33f -> {
-                        val exo = player ?: return true
-                        if (exo.isPlaying) {
-                            exo.pause()
-                            showOverlay("⏸ Pausa")
-                        } else {
-                            exo.play()
-                            showOverlay("▶ Play")
-                        }
-                        hideOverlayDelayed()
+                val screenHeight = binding.root.height.toFloat()
+                val screenWidth  = binding.root.width.toFloat()
+                val inUpperHalf  = e.y < screenHeight * 0.5f
+
+                if (inUpperHalf) {
+                    // Metà superiore → play/pausa
+                    val exo = player ?: return true
+                    if (exo.isPlaying) {
+                        exo.pause()
+                        showOverlay("⏸ Pausa")
+                    } else {
+                        exo.play()
+                        showOverlay("▶ Play")
                     }
-                    // Ultimo terzo → avanti +10s
-                    x > w * 0.66f -> seekBy(10_000L)
-                    // Terzo centrale → nessuna azione (riservato allo swipe seek)
+                    hideOverlayDelayed()
+                } else {
+                    // Metà inferiore: sx -10s, dx +10s
+                    if (e.x < screenWidth * 0.5f) seekBy(-10_000L) else seekBy(10_000L)
                 }
                 return true
             }
@@ -390,13 +406,15 @@ class PlayerActivity : AppCompatActivity() {
     private fun setupTouchListener() {
         binding.playerView.setOnTouchListener { _, event ->
             val screenHeight = binding.root.height.toFloat()
+            val screenWidth  = binding.root.width.toFloat()
+
+            // Se la barra è visibile e il touch è nell'ultimo 15% → lascia passare ai bottoni
             if (binding.playerView.isControllerFullyVisible &&
                 event.y > screenHeight * 0.85f) {
                 return@setOnTouchListener false
             }
 
             gestureDetector.onTouchEvent(event)
-            val screenWidth = binding.root.width.toFloat()
 
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -415,21 +433,27 @@ class PlayerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.x - gestureStartX
                     val dy = event.y - gestureStartY
+                    val inLowerHalf = gestureStartY > screenHeight * 0.5f
 
                     if (gestureType == GestureType.NONE && (abs(dx) > 20 || abs(dy) > 20)) {
-                        val inCenterZone = gestureStartX in (screenWidth * 0.33f)..(screenWidth * 0.66f)
-                        gestureType = if (abs(dx) > abs(dy) && inCenterZone) {
-                            seekVelocityActive = true
-                            GestureType.SEEK
-                        } else if (abs(dx) <= abs(dy)) {
-                            if (gestureStartX < screenWidth / 2) GestureType.BRIGHTNESS
-                            else GestureType.VOLUME
-                        } else GestureType.NONE
+                        gestureType = when {
+                            // Seek orizzontale: SOLO nella metà inferiore
+                            abs(dx) > abs(dy) && inLowerHalf -> {
+                                seekVelocityActive = true
+                                GestureType.SEEK
+                            }
+                            // Swipe verticale: luminosità (sx) o volume (dx) — tutta l'altezza
+                            abs(dx) <= abs(dy) -> {
+                                if (gestureStartX < screenWidth / 2) GestureType.BRIGHTNESS
+                                else GestureType.VOLUME
+                            }
+                            else -> GestureType.NONE
+                        }
                     }
 
                     when (gestureType) {
-                        GestureType.SEEK -> handleVelocitySeek(event.x)
-                        GestureType.VOLUME -> handleVolumeGesture(dy, screenHeight)
+                        GestureType.SEEK       -> handleVelocitySeek(event.x)
+                        GestureType.VOLUME     -> handleVolumeGesture(dy, screenHeight)
                         GestureType.BRIGHTNESS -> handleBrightnessGesture(dy, screenHeight)
                         else -> {}
                     }
