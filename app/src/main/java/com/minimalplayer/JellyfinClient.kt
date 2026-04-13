@@ -237,4 +237,78 @@ class JellyfinClient {
             null
         }
     }
+
+    // ── Reporting playback a Jellyfin ─────────────────────────────────────────
+    //
+    // Le tre chiamate che Jellyfin usa per aggiornare UserData (posizione, stato
+    // visto/parziale) nel suo database, per utente.
+    //
+    // positionMs = posizione in millisecondi → convertita in ticks (ms * 10_000)
+    // playSessionId = UUID generato dal client per tutta la sessione
+    //
+    // Tutte le funzioni sono fire-and-forget: i fallimenti di rete vengono
+    // silenziosamente ignorati perché ResumeManager gestisce già la persistenza
+    // locale come fallback.
+
+    fun reportPlaybackStarted(itemId: String, positionMs: Long, playSessionId: String) {
+        try {
+            val body = JSONObject().apply {
+                put("ItemId", itemId)
+                put("MediaSourceId", itemId)
+                put("PositionTicks", positionMs * 10_000L)
+                put("IsPaused", false)
+                put("PlayMethod", "DirectPlay")
+                put("PlaySessionId", playSessionId)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$baseUrl/Sessions/Playing")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            client.newCall(request).execute().close()
+        } catch (_: Exception) { }
+    }
+
+    fun reportPlaybackProgress(itemId: String, positionMs: Long, isPaused: Boolean, playSessionId: String) {
+        try {
+            val body = JSONObject().apply {
+                put("ItemId", itemId)
+                put("MediaSourceId", itemId)
+                put("PositionTicks", positionMs * 10_000L)
+                put("IsPaused", isPaused)
+                put("PlayMethod", "DirectPlay")
+                put("PlaySessionId", playSessionId)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$baseUrl/Sessions/Playing/Progress")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            client.newCall(request).execute().close()
+        } catch (_: Exception) { }
+    }
+
+    fun reportPlaybackStopped(itemId: String, positionMs: Long, playSessionId: String) {
+        try {
+            val body = JSONObject().apply {
+                put("ItemId", itemId)
+                put("MediaSourceId", itemId)
+                put("PositionTicks", positionMs * 10_000L)
+                put("PlayMethod", "DirectPlay")
+                put("PlaySessionId", playSessionId)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$baseUrl/Sessions/Playing/Stopped")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .header("X-Emby-Authorization", authHeader())
+                .build()
+
+            client.newCall(request).execute().close()
+        } catch (_: Exception) { }
+    }
 }

@@ -63,6 +63,23 @@ class PlayerActivity : AppCompatActivity() {
     }
     private val overlayHandler = Handler(Looper.getMainLooper())
 
+    // ── Reporting Jellyfin ────────────────────────────────────────────────────
+    // UUID univoco per questa sessione di riproduzione. Generato in initPlayer,
+    // usato in tutte e tre le chiamate API (Started / Progress / Stopped).
+    private var playSessionId = ""
+
+    // Client Jellyfin dedicato al reporting — inizializzato in initPlayer
+    private var jellyfinReporter: JellyfinClient? = null
+
+    // Handler per il ping periodico ogni 10 secondi
+    private val progressHandler = Handler(Looper.getMainLooper())
+    private val progressRunnable = object : Runnable {
+        override fun run() {
+            reportProgress()
+            progressHandler.postDelayed(this, 10_000)
+        }
+    }
+
     // Seek velocità
     private var seekVelocityActive = false
     private var seekLastX = 0f
@@ -192,6 +209,16 @@ class PlayerActivity : AppCompatActivity() {
             .setSubtitleConfigurations(subtitleConfigs)
             .build()
 
+        // Prepara il client di reporting e il playSessionId per questa sessione
+        if (jellyfinItemId.isNotEmpty() && jellyfinToken.isNotEmpty()) {
+            playSessionId = UUID.randomUUID().toString()
+            jellyfinReporter = JellyfinClient().also {
+                it.baseUrl = jellyfinBaseUrl
+                it.accessToken = jellyfinToken
+                it.userId = ""   // non serve per le Sessions API
+            }
+        }
+
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(httpDataSourceFactory))
             .build().also { exo ->
@@ -247,13 +274,59 @@ class PlayerActivity : AppCompatActivity() {
                         if (state == Player.STATE_READY && loudnessEnhancer == null) {
                             setupLoudnessEnhancer(exo.audioSessionId)
                         }
+                        if (state == Player.STATE_READY) {
+                            // Segnala avvio a Jellyfin la prima volta che il player è pronto
+                            reportStarted()
+                        }
                         if (state == Player.STATE_ENDED) {
                             resumeManager.markWatched(videoUrl)
+                            // Segnala a Jellyfin che la riproduzione è terminata alla fine
+                            reportStopped(exo.duration.coerceAtLeast(0L))
                             finish()
                         }
                     }
                 })
             }
+    }
+
+    // ── Reporting Jellyfin: tre funzioni ──────────────────────────────────────
+    //
+    // Tutte le chiamate di rete avvengono su Dispatchers.IO.
+    // Se jellyfinItemId è vuoto (file non Jellyfin) non fa nulla.
+
+    private fun reportStarted() {
+        val reporter = jellyfinReporter ?: return
+        val itemId = jellyfinItemId.ifEmpty { return }
+        val sessionId = playSessionId.ifEmpty { return }
+        val posMs = player?.currentPosition ?: startPosition
+        lifecycleScope.launch(Dispatchers.IO) {
+            reporter.reportPlaybackStarted(itemId, posMs, sessionId)
+        }
+        // Avvia il ping periodico ogni 10 secondi
+        progressHandler.removeCallbacks(progressRunnable)
+        progressHandler.postDelayed(progressRunnable, 10_000)
+    }
+
+    private fun reportProgress() {
+        val reporter = jellyfinReporter ?: return
+        val itemId = jellyfinItemId.ifEmpty { return }
+        val sessionId = playSessionId.ifEmpty { return }
+        val exo = player ?: return
+        val posMs = exo.currentPosition
+        val isPaused = !exo.isPlaying
+        lifecycleScope.launch(Dispatchers.IO) {
+            reporter.reportPlaybackProgress(itemId, posMs, isPaused, sessionId)
+        }
+    }
+
+    private fun reportStopped(positionMs: Long) {
+        val reporter = jellyfinReporter ?: return
+        val itemId = jellyfinItemId.ifEmpty { return }
+        val sessionId = playSessionId.ifEmpty { return }
+        progressHandler.removeCallbacks(progressRunnable)
+        lifecycleScope.launch(Dispatchers.IO) {
+            reporter.reportPlaybackStopped(itemId, positionMs, sessionId)
+        }
     }
 
     // ── LoudnessEnhancer ──────────────────────────────────────────────────────
@@ -555,6 +628,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Segnala a Jellyfin la posizione finale prima di rilasciare il player
+        val finalPos = player?.currentPosition ?: 0L
+        reportStopped(finalPos)
         saveCurrentPosition()
         hudHandler.removeCallbacks(hudRunnable)
         loudnessEnhancer?.release()
