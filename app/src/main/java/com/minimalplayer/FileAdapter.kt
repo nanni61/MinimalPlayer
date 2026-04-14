@@ -32,13 +32,11 @@ class FileAdapter(
         holder.tvName.text = entry.name
 
         if (isRootView) {
-            // Schermata librerie — tap singolo su tutta la riga
             holder.tvIcon.text = "📁"
             holder.itemView.setOnClickListener { onClick(entry) }
             return
         }
 
-        // Imposta icona e stato visione
         if (entry.isDirectory) {
             holder.tvIcon.text = "📁"
             holder.tvMeta?.text = "Cartella"
@@ -46,7 +44,26 @@ class FileAdapter(
             holder.tvName.alpha = 1.0f
         } else {
             val ext = entry.name.substringAfterLast('.', "").uppercase()
-            when (resumeManager.getWatchStatus(entry.url)) {
+
+            // Preferisci i dati Jellyfin (UserData), fallback a ResumeManager locale
+            val watchStatus: WatchStatus
+            val resumePositionMs: Long
+
+            if (entry.jellyfinPlayed != null) {
+                // Dati dal server Jellyfin — fonte di verità
+                watchStatus = when {
+                    entry.jellyfinPlayed -> WatchStatus.WATCHED
+                    (entry.jellyfinPositionMs ?: 0L) > 10_000L -> WatchStatus.PARTIAL
+                    else -> WatchStatus.UNWATCHED
+                }
+                resumePositionMs = entry.jellyfinPositionMs ?: 0L
+            } else {
+                // Fallback locale (file non Jellyfin o UserData assente)
+                watchStatus = resumeManager.getWatchStatus(entry.url)
+                resumePositionMs = resumeManager.getPosition(entry.url)
+            }
+
+            when (watchStatus) {
                 WatchStatus.WATCHED -> {
                     holder.tvIcon.text = "✅"
                     holder.tvMeta?.text = ext
@@ -56,8 +73,7 @@ class FileAdapter(
                 WatchStatus.PARTIAL -> {
                     holder.tvIcon.text = "🎬"
                     holder.tvMeta?.text = ext
-                    val pos = resumeManager.getPosition(entry.url)
-                    holder.tvResume?.text = "▶ ${resumeManager.formatPosition(pos)}"
+                    holder.tvResume?.text = "▶ ${resumeManager.formatPosition(resumePositionMs)}"
                     holder.tvResume?.visibility = View.VISIBLE
                     holder.tvName.alpha = 1.0f
                 }
@@ -71,21 +87,17 @@ class FileAdapter(
         }
 
         if (entry.isDirectory) {
-            // Cartelle: tap singolo su icona e testo
             holder.tvIcon.setOnClickListener { onClick(entry) }
             holder.layoutText?.setOnClickListener { onClick(entry) }
             holder.tvIcon.setOnLongClickListener(null)
             holder.layoutText?.setOnLongClickListener(null)
         } else {
-            // Video: tap LUNGO su icona o testo per avviare
-            // Tap singolo non fa nulla — evita avvii accidentali durante lo scroll
             holder.tvIcon.setOnClickListener(null)
             holder.layoutText?.setOnClickListener(null)
             holder.tvIcon.setOnLongClickListener { onClick(entry); true }
             holder.layoutText?.setOnLongClickListener { onClick(entry); true }
         }
 
-        // La riga non è mai cliccabile direttamente
         holder.itemView.setOnClickListener(null)
         holder.itemView.isClickable = false
     }

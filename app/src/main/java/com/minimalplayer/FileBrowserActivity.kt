@@ -43,7 +43,6 @@ class FileBrowserActivity : AppCompatActivity() {
         binding.btnBack.setOnClickListener { navigateBack() }
         binding.btnRefresh.setOnClickListener { refresh() }
         binding.btnSettings.setOnClickListener {
-            // Torna alla schermata di config cancellando le credenziali salvate
             getSharedPreferences("server_config", MODE_PRIVATE)
                 .edit().remove("password").putBoolean("remember_me", false).apply()
             finish()
@@ -68,10 +67,8 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        // Ricarica il livello corrente
-        if (navStack.size <= 1) {
-            loadViews()
-        } else {
+        if (navStack.size <= 1) loadViews()
+        else {
             val (_, id) = navStack.last()
             loadItems(id)
         }
@@ -139,7 +136,14 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun openVideo(entry: FileEntry) {
-        val savedPosition = resumeManager.getPosition(entry.url)
+        // Preferisci la posizione da Jellyfin (UserData), fallback a ResumeManager locale
+        val savedPosition: Long = when {
+            entry.jellyfinPositionMs != null && entry.jellyfinPositionMs > 10_000L ->
+                entry.jellyfinPositionMs
+            else ->
+                resumeManager.getPosition(entry.url)
+        }
+
         if (savedPosition > 10_000L) {
             AlertDialog.Builder(this, com.google.android.material.R.style.ThemeOverlay_MaterialComponents_Dialog_Alert)
                 .setTitle(entry.name)
@@ -193,6 +197,8 @@ class FileBrowserActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        binding.recyclerView.adapter?.notifyDataSetChanged()
+        // Ricarica la lista dal server per aggiornare lo stato di visione
+        // dopo il ritorno dal player, senza affidarsi al solo notifyDataSetChanged
+        refresh()
     }
 }

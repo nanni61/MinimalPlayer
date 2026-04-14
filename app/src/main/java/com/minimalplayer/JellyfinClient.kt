@@ -13,7 +13,10 @@ data class FileEntry(
     val url: String,
     val isDirectory: Boolean,
     val size: Long = -1,
-    val jellyfinId: String = ""
+    val jellyfinId: String = "",
+    // Stato di visione letto da Jellyfin (UserData) — null = non disponibile
+    val jellyfinPlayed: Boolean? = null,
+    val jellyfinPositionMs: Long? = null   // posizione in ms, 0 = mai visto
 )
 
 data class SubtitleTrack(
@@ -106,6 +109,10 @@ class JellyfinClient {
     }
 
     // ── Contenuto cartella ────────────────────────────────────────────────────
+    //
+    // "UserData" aggiunto ai Fields: la risposta include per ogni item
+    // UserData.Played (bool) e UserData.PlaybackPositionTicks (long).
+    // I ticks Jellyfin sono unità da 100ns → dividiamo per 10_000 per avere ms.
 
     fun getItems(parentId: String): Result<List<FileEntry>> {
         return try {
@@ -113,7 +120,7 @@ class JellyfinClient {
                 "?ParentId=$parentId" +
                 "&SortBy=SortName" +
                 "&SortOrder=Ascending" +
-                "&Fields=MediaSources,Path" +
+                "&Fields=MediaSources,Path,UserData" +
                 "&Recursive=false"
 
             val request = Request.Builder()
@@ -141,11 +148,19 @@ class JellyfinClient {
 
                 val streamUrl = if (isVideo) getStreamUrl(id) else ""
 
+                // Leggi UserData solo per i video
+                val userData = if (isVideo) item.optJSONObject("UserData") else null
+                val played = userData?.optBoolean("Played", false)
+                val positionTicks = userData?.optLong("PlaybackPositionTicks", 0L) ?: 0L
+                val positionMs = positionTicks / 10_000L
+
                 entries.add(FileEntry(
                     name = name,
                     url = streamUrl,
                     isDirectory = isDir,
-                    jellyfinId = id
+                    jellyfinId = id,
+                    jellyfinPlayed = played,
+                    jellyfinPositionMs = if (isVideo) positionMs else null
                 ))
             }
 
@@ -211,10 +226,6 @@ class JellyfinClient {
     }
 
     // ── Sottotitoli: download su file locale ──────────────────────────────────
-    //
-    // Scarica l'SRT da Jellyfin (con autenticazione) e lo salva in cacheDir.
-    // Restituisce il File locale, oppure null se il download fallisce.
-    // Il chiamante è responsabile di cancellare i file dopo l'uso.
 
     fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
         return try {
@@ -229,7 +240,6 @@ class JellyfinClient {
             val bytes = response.body?.bytes() ?: return null
             if (bytes.isEmpty()) return null
 
-            // Nome file univoco: sub_{index}_{language}.srt
             val destFile = File(cacheDir, "sub_${track.index}_${track.language}.srt")
             destFile.writeBytes(bytes)
             destFile
@@ -239,16 +249,6 @@ class JellyfinClient {
     }
 
     // ── Reporting playback a Jellyfin ─────────────────────────────────────────
-    //
-    // Le tre chiamate che Jellyfin usa per aggiornare UserData (posizione, stato
-    // visto/parziale) nel suo database, per utente.
-    //
-    // positionMs = posizione in millisecondi → convertita in ticks (ms * 10_000)
-    // playSessionId = UUID generato dal client per tutta la sessione
-    //
-    // Tutte le funzioni sono fire-and-forget: i fallimenti di rete vengono
-    // silenziosamente ignorati perché ResumeManager gestisce già la persistenza
-    // locale come fallback.
 
     fun reportPlaybackStarted(itemId: String, positionMs: Long, playSessionId: String) {
         try {
