@@ -50,8 +50,8 @@ class FileBrowserActivity : AppCompatActivity() {
         binding.btnExit.setOnClickListener { finishAffinity() }
 
         lifecycleScope.launch {
+            binding.progressBar.visibility = View.VISIBLE
             if (username.isNotEmpty()) {
-                binding.progressBar.visibility = View.VISIBLE
                 val result = withContext(Dispatchers.IO) {
                     jellyfin.authenticate(username, password)
                 }
@@ -62,41 +62,47 @@ class FileBrowserActivity : AppCompatActivity() {
                     return@launch
                 }
             }
-            loadViews()
+            // authenticate completato — ora carichiamo le views nello stesso coroutine
+            doLoadViews()
         }
     }
 
     private fun refresh() {
-        if (navStack.size <= 1) loadViews()
-        else {
+        if (navStack.size <= 1) {
+            lifecycleScope.launch { doLoadViews() }
+        } else {
             val (_, id) = navStack.last()
             loadItems(id)
         }
     }
 
-    private fun loadViews() {
+    // Versione interna chiamata dentro un coroutine già attivo (no launch interno)
+    private suspend fun doLoadViews() {
         binding.progressBar.visibility = View.VISIBLE
         binding.tvEmpty.visibility = View.GONE
         binding.recyclerView.visibility = View.GONE
 
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { jellyfin.getViews() }
-            binding.progressBar.visibility = View.GONE
-            result.onSuccess { entries ->
-                if (entries.isEmpty()) {
-                    binding.tvEmpty.visibility = View.VISIBLE
-                } else {
-                    navStack.clear()
-                    navStack.addLast(Pair("Librerie", "root"))
-                    updatePathDisplay()
-                    showEntries(entries, isRootView = true)
-                }
-            }.onFailure {
-                Toast.makeText(this@FileBrowserActivity,
-                    "Errore: ${it.message}", Toast.LENGTH_LONG).show()
+        val result = withContext(Dispatchers.IO) { jellyfin.getViews() }
+        binding.progressBar.visibility = View.GONE
+        result.onSuccess { entries ->
+            if (entries.isEmpty()) {
                 binding.tvEmpty.visibility = View.VISIBLE
+            } else {
+                navStack.clear()
+                navStack.addLast(Pair("Librerie", "root"))
+                updatePathDisplay()
+                showEntries(entries, isRootView = true)
             }
+        }.onFailure {
+            Toast.makeText(this@FileBrowserActivity,
+                "Errore: ${it.message}", Toast.LENGTH_LONG).show()
+            binding.tvEmpty.visibility = View.VISIBLE
         }
+    }
+
+    // Versione pubblica per loadViews (usata da onResume/navigateBack)
+    private fun loadViews() {
+        lifecycleScope.launch { doLoadViews() }
     }
 
     private fun loadItems(parentId: String) {
@@ -136,7 +142,6 @@ class FileBrowserActivity : AppCompatActivity() {
     }
 
     private fun openVideo(entry: FileEntry) {
-        // Preferisci la posizione da Jellyfin (UserData), fallback a ResumeManager locale
         val savedPosition: Long = when {
             entry.jellyfinPositionMs != null && entry.jellyfinPositionMs > 10_000L ->
                 entry.jellyfinPositionMs
@@ -197,8 +202,6 @@ class FileBrowserActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Ricarica la lista dal server per aggiornare lo stato di visione
-        // dopo il ritorno dal player, senza affidarsi al solo notifyDataSetChanged
         refresh()
     }
 }
