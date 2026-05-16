@@ -209,7 +209,7 @@ class JellyfinClient {
                 val title = stream.optString("DisplayTitle",
                     stream.optString("Title", language))
 
-                val subUrl = "$baseUrl/Videos/$itemId/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
+                val subUrl = "$baseUrl/Videos/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
 
                 subtitles.add(SubtitleTrack(
                     index = index,
