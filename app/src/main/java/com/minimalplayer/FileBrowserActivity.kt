@@ -28,9 +28,11 @@ class FileBrowserActivity : AppCompatActivity() {
         setContentView(binding.root)
         resumeManager = ResumeManager(this)
 
-        val baseUrl = intent.getStringExtra("base_url") ?: ""
-        val username = intent.getStringExtra("username") ?: ""
-        val password = intent.getStringExtra("password") ?: ""
+        val baseUrl     = intent.getStringExtra("base_url") ?: ""
+        val username    = intent.getStringExtra("username") ?: ""
+        val password    = intent.getStringExtra("password") ?: ""
+        val accessToken = intent.getStringExtra("access_token") ?: ""
+        val userId      = intent.getStringExtra("user_id") ?: ""
 
         jellyfin = JellyfinClient()
         jellyfin.baseUrl = baseUrl
@@ -51,7 +53,13 @@ class FileBrowserActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             binding.progressBar.visibility = View.VISIBLE
-            if (username.isNotEmpty()) {
+
+            if (accessToken.isNotEmpty() && userId.isNotEmpty()) {
+                // Token già disponibile — nessuna ri-autenticazione necessaria
+                jellyfin.accessToken = accessToken
+                jellyfin.userId = userId
+            } else if (username.isNotEmpty()) {
+                // Fallback: autentica se non abbiamo ricevuto il token
                 val result = withContext(Dispatchers.IO) {
                     jellyfin.authenticate(username, password)
                 }
@@ -62,7 +70,8 @@ class FileBrowserActivity : AppCompatActivity() {
                     return@launch
                 }
             }
-            // authenticate completato — ora carichiamo le views nello stesso coroutine
+
+            // Procede solo dopo che userId è garantito impostato
             doLoadViews()
         }
     }
@@ -76,7 +85,6 @@ class FileBrowserActivity : AppCompatActivity() {
         }
     }
 
-    // Versione interna chiamata dentro un coroutine già attivo (no launch interno)
     private suspend fun doLoadViews() {
         binding.progressBar.visibility = View.VISIBLE
         binding.tvEmpty.visibility = View.GONE
@@ -100,7 +108,6 @@ class FileBrowserActivity : AppCompatActivity() {
         }
     }
 
-    // Versione pubblica per loadViews (usata da onResume/navigateBack)
     private fun loadViews() {
         lifecycleScope.launch { doLoadViews() }
     }

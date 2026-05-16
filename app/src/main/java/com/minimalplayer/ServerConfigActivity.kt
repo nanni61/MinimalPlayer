@@ -24,10 +24,10 @@ class ServerConfigActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("server_config", MODE_PRIVATE)
 
-        val url = prefs.getString("url", "http://192.168.1.200:8096") ?: ""
-        val username = prefs.getString("username", "") ?: ""
+        val url      = prefs.getString("url", "http://192.168.1.200:8096") ?: ""
+        val username = prefs.getString("username", "admin") ?: "admin"
         val password = if (prefs.getBoolean("remember_me", false))
-            prefs.getString("password", "") ?: "" else ""
+            prefs.getString("password", "admin") ?: "admin" else "admin"
 
         // Se ci sono credenziali salvate, connetti direttamente
         if (url.isNotEmpty() && username.isNotEmpty() && password.isNotEmpty()) {
@@ -41,12 +41,13 @@ class ServerConfigActivity : AppCompatActivity() {
 
     private fun showConfigScreen(url: String, username: String) {
         binding.etServerUrl.setText(url)
-        binding.etUsername.setText(username)
+        binding.etUsername.setText(username.ifEmpty { "admin" })
         val remembered = prefs.getBoolean("remember_me", false)
         binding.cbRememberMe.isChecked = remembered
-        if (remembered) {
-            binding.etPassword.setText(prefs.getString("password", ""))
-        }
+        binding.etPassword.setText(
+            if (remembered) prefs.getString("password", "admin") ?: "admin"
+            else "admin"
+        )
 
         binding.btnConnect.setOnClickListener { connect() }
         binding.etPassword.setOnEditorActionListener { _, actionId, _ ->
@@ -57,16 +58,15 @@ class ServerConfigActivity : AppCompatActivity() {
 
     private fun connectDirectly(url: String, username: String, password: String) {
         lifecycleScope.launch {
+            val client = JellyfinClient()
+            client.baseUrl = url
             val result = withContext(Dispatchers.IO) {
-                val client = JellyfinClient()
-                client.baseUrl = url
                 client.authenticate(username, password)
             }
             result.onSuccess {
-                // Vai direttamente al browser
-                openBrowser(url, username, password)
+                // Passa token e userId già ottenuti — FileBrowserActivity non ri-autentica
+                openBrowser(url, username, password, client.accessToken, client.userId)
             }.onFailure {
-                // Login fallito — mostra la schermata di configurazione
                 showConfigScreen(url, username)
                 Toast.makeText(this@ServerConfigActivity,
                     "Connessione fallita, riprova", Toast.LENGTH_SHORT).show()
@@ -89,9 +89,9 @@ class ServerConfigActivity : AppCompatActivity() {
         binding.btnConnect.text = "Connessione…"
 
         lifecycleScope.launch {
+            val client = JellyfinClient()
+            client.baseUrl = url
             val result = withContext(Dispatchers.IO) {
-                val client = JellyfinClient()
-                client.baseUrl = url
                 if (username.isNotEmpty()) client.authenticate(username, password)
                 else Result.success(Unit)
             }
@@ -107,7 +107,7 @@ class ServerConfigActivity : AppCompatActivity() {
                     .apply()
                 if (rememberMe) prefs.edit().putString("password", password).apply()
                 else prefs.edit().remove("password").apply()
-                openBrowser(url, username, password)
+                openBrowser(url, username, password, client.accessToken, client.userId)
             }.onFailure {
                 Toast.makeText(this@ServerConfigActivity,
                     "Errore: ${it.message}", Toast.LENGTH_LONG).show()
@@ -115,12 +115,19 @@ class ServerConfigActivity : AppCompatActivity() {
         }
     }
 
-    private fun openBrowser(url: String, username: String, password: String) {
+    private fun openBrowser(
+        url: String,
+        username: String,
+        password: String,
+        accessToken: String,
+        userId: String
+    ) {
         startActivity(Intent(this, FileBrowserActivity::class.java).apply {
             putExtra("base_url", url)
             putExtra("username", username)
             putExtra("password", password)
+            putExtra("access_token", accessToken)
+            putExtra("user_id", userId)
         })
-        // Non finire questa activity — serve come fallback se si preme indietro
     }
 }
