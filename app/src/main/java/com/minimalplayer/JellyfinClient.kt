@@ -38,6 +38,7 @@ class JellyfinClient {
     var userId = ""
 
     private val deviceId = "MinimalPlayer-Android-001"
+    private val TAG = "MinimalPlayer"
 
     private fun authHeader(): String {
         return if (accessToken.isEmpty()) {
@@ -56,14 +57,18 @@ class JellyfinClient {
                 put("Pw", password)
             }.toString()
 
+            val url = "$baseUrl/Users/AuthenticateByName"
+            android.util.Log.d(TAG, "authenticate → $url")
+
             val request = Request.Builder()
-                .url("$baseUrl/Users/AuthenticateByName")
+                .url(url)
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .header("X-Emby-Authorization", authHeader())
                 .header("Content-Type", "application/json")
                 .build()
 
             val response = client.newCall(request).execute()
+            android.util.Log.d(TAG, "authenticate ← HTTP ${response.code}")
             if (!response.isSuccessful) {
                 return Result.failure(Exception("Autenticazione fallita: HTTP ${response.code}"))
             }
@@ -73,6 +78,7 @@ class JellyfinClient {
             userId = json.getJSONObject("User").getString("Id")
             Result.success(Unit)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "authenticate exception: ${e.message}")
             Result.failure(e)
         }
     }
@@ -81,12 +87,16 @@ class JellyfinClient {
 
     fun getViews(): Result<List<FileEntry>> {
         return try {
+            val url = "$baseUrl/Users/$userId/Views"
+            android.util.Log.d(TAG, "getViews → $url")
+
             val request = Request.Builder()
-                .url("$baseUrl/Users/$userId/Views")
+                .url(url)
                 .header("X-Emby-Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
+            android.util.Log.d(TAG, "getViews ← HTTP ${response.code}")
             if (!response.isSuccessful) return Result.failure(Exception("HTTP ${response.code}"))
 
             val json = JSONObject(response.body?.string() ?: "{}")
@@ -104,6 +114,7 @@ class JellyfinClient {
             }
             Result.success(entries)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "getViews exception: ${e.message}")
             Result.failure(e)
         }
     }
@@ -123,12 +134,15 @@ class JellyfinClient {
                 "&Fields=MediaSources,Path,UserData" +
                 "&Recursive=false"
 
+            android.util.Log.d(TAG, "getItems → $url")
+
             val request = Request.Builder()
                 .url(url)
                 .header("X-Emby-Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
+            android.util.Log.d(TAG, "getItems ← HTTP ${response.code}")
             if (!response.isSuccessful) return Result.failure(Exception("HTTP ${response.code}"))
 
             val json = JSONObject(response.body?.string() ?: "{}")
@@ -166,6 +180,7 @@ class JellyfinClient {
 
             Result.success(entries.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() })))
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "getItems exception: ${e.message}")
             Result.failure(e)
         }
     }
@@ -180,13 +195,17 @@ class JellyfinClient {
 
     fun getSubtitles(itemId: String): Result<List<SubtitleTrack>> {
         return try {
+            val url = "$baseUrl/Videos/$itemId/PlaybackInfo?UserId=$userId"
+            android.util.Log.d(TAG, "getSubtitles → $url")
+
             val request = Request.Builder()
-                .url("$baseUrl/Videos/$itemId/PlaybackInfo?UserId=$userId")
+                .url(url)
                 .post("{}".toRequestBody("application/json".toMediaType()))
                 .header("X-Emby-Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
+            android.util.Log.d(TAG, "getSubtitles ← HTTP ${response.code}")
             if (!response.isSuccessful) return Result.success(emptyList())
 
             val json = JSONObject(response.body?.string() ?: "{}")
@@ -210,6 +229,7 @@ class JellyfinClient {
                     stream.optString("Title", language))
 
                 val subUrl = "$baseUrl/Videos/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
+                android.util.Log.d(TAG, "subtitle track $index url: $subUrl")
 
                 subtitles.add(SubtitleTrack(
                     index = index,
@@ -221,6 +241,7 @@ class JellyfinClient {
 
             Result.success(subtitles)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "getSubtitles exception: ${e.message}")
             Result.success(emptyList())
         }
     }
@@ -229,12 +250,15 @@ class JellyfinClient {
 
     fun downloadSubtitle(track: SubtitleTrack, cacheDir: File): File? {
         return try {
+            android.util.Log.d(TAG, "downloadSubtitle → ${track.url}")
+
             val request = Request.Builder()
                 .url(track.url)
                 .header("X-Emby-Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
+            android.util.Log.d(TAG, "downloadSubtitle ← HTTP ${response.code}")
             if (!response.isSuccessful) return null
 
             val bytes = response.body?.bytes() ?: return null
@@ -244,6 +268,7 @@ class JellyfinClient {
             destFile.writeBytes(bytes)
             destFile
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "downloadSubtitle exception: ${e.message}")
             null
         }
     }
