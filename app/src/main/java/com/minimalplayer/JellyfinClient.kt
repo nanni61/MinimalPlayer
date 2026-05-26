@@ -29,9 +29,13 @@ data class SubtitleTrack(
 class JellyfinClient {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+    .connectTimeout(15, TimeUnit.SECONDS)
+    .readTimeout(20, TimeUnit.SECONDS)
+    .retryOnConnectionFailure(true)
+    .connectionPool(
+        okhttp3.ConnectionPool(5, 30, TimeUnit.SECONDS)
+    )
+    .build()
 
     var baseUrl = ""
     var accessToken = ""
