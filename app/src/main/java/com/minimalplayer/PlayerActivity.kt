@@ -428,17 +428,17 @@ class PlayerActivity : AppCompatActivity() {
 
     // ─── GESTURE ───────────────────────────────────────────────────────────────
     //
-    // Schermo diviso in due zone ORIZZONTALI:
-    //
-    //  ┌─────────────────────────────────────────────┐
-    //  │                                             │
-    //  │       ZONA SUPERIORE  (y < 50%)             │  doppio tap → play/pausa
-    //  │                                             │  swipe verticale sx → luminosità
-    //  │                                             │  swipe verticale dx → volume
-    //  ├──────────────────┬──────────────────────────┤
-    //  │  ZONA INF. SX    │    ZONA INF. DX           │
-    //  │  doppio tap -10s │    doppio tap +10s         │  swipe orizzontale → seek velocità
-    //  └──────────────────┴──────────────────────────┘
+    //  ┌────────┬──────────────────────────┬────────┐
+    //  │        │                          │        │
+    //  │  ZONA  │        ZONA 2            │  ZONA  │
+    //  │   4    │   doppio tap play/pausa  │   3    │
+    //  │ lumin. │   (y < 40%, x 23%-77%)  │ volume │
+    //  │        │                          │        │
+    //  ├────────┴──────────────────────────┴────────┤
+    //  │                                            │
+    //  │              ZONA 1  (y > 60%)             │
+    //  │   seek orizzontale | doppio tap ±10s       │
+    //  └────────────────────────────────────────────┘
     //
     // Tap singolo ovunque → mostra/nasconde barra controlli
 
@@ -454,22 +454,28 @@ class PlayerActivity : AppCompatActivity() {
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 val screenHeight = binding.root.height.toFloat()
                 val screenWidth  = binding.root.width.toFloat()
-                val inUpperHalf  = e.y < screenHeight * 0.5f
+                val inZone1      = e.y > screenHeight * 0.60f
+                val inZone2      = e.y < screenHeight * 0.40f
+                                    && e.x >= screenWidth * 0.23f
+                                    && e.x <= screenWidth * 0.77f
 
-                if (inUpperHalf) {
-                    // Metà superiore → play/pausa
-                    val exo = player ?: return true
-                    if (exo.isPlaying) {
-                        exo.pause()
-                        showOverlay("⏸ Pausa")
-                    } else {
-                        exo.play()
-                        showOverlay("▶ Play")
+                when {
+                    inZone2 -> {
+                        // Zona 2 → play/pausa
+                        val exo = player ?: return true
+                        if (exo.isPlaying) {
+                            exo.pause()
+                            showOverlay("⏸ Pausa")
+                        } else {
+                            exo.play()
+                            showOverlay("▶ Play")
+                        }
+                        hideOverlayDelayed()
                     }
-                    hideOverlayDelayed()
-                } else {
-                    // Metà inferiore: sx -10s, dx +10s
-                    if (e.x < screenWidth * 0.5f) seekBy(-10_000L) else seekBy(10_000L)
+                    inZone1 -> {
+                        // Zona 1 → ±10s (sx = -10s, dx = +10s)
+                        if (e.x < screenWidth * 0.5f) seekBy(-10_000L) else seekBy(10_000L)
+                    }
                 }
                 return true
             }
@@ -496,7 +502,10 @@ class PlayerActivity : AppCompatActivity() {
                     gestureType = GestureType.NONE
                     initialVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                     initialBrightness = getCurrentBrightness()
-                    currentBoostMb = loudnessEnhancer?.targetGain?.toInt() ?: 0
+                    // Fix volume intermittente: legge il boost corrente dal LoudnessEnhancer
+                    // solo se è già inizializzato, altrimenti usa currentBoostMb che tiene
+                    // traccia dell'ultimo valore impostato (non si azzera tra un gesto e l'altro)
+                    loudnessEnhancer?.let { currentBoostMb = it.targetGain.toInt() }
                     seekVelocityActive = false
                     seekAccumulator = player?.currentPosition ?: 0L
                     seekLastX = event.x
@@ -506,20 +515,23 @@ class PlayerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.x - gestureStartX
                     val dy = event.y - gestureStartY
-                    val inLowerHalf = gestureStartY > screenHeight * 0.5f
+
+                    // Classifica la zona dal punto di inizio del gesto
+                    val inZone1 = gestureStartY > screenHeight * 0.60f
+                    val inZone3 = gestureStartY < screenHeight * 0.60f && gestureStartX > screenWidth * 0.77f
+                    val inZone4 = gestureStartY < screenHeight * 0.60f && gestureStartX < screenWidth * 0.23f
 
                     if (gestureType == GestureType.NONE && (abs(dx) > 20 || abs(dy) > 20)) {
                         gestureType = when {
-                            // Seek orizzontale: SOLO nella metà inferiore
-                            abs(dx) > abs(dy) && inLowerHalf -> {
+                            // Zona 1: seek orizzontale se prevalentemente orizzontale
+                            inZone1 && abs(dx) > abs(dy) -> {
                                 seekVelocityActive = true
                                 GestureType.SEEK
                             }
-                            // Swipe verticale: luminosità (sx) o volume (dx) — tutta l'altezza
-                            abs(dx) <= abs(dy) -> {
-                                if (gestureStartX < screenWidth / 2) GestureType.BRIGHTNESS
-                                else GestureType.VOLUME
-                            }
+                            // Zona 3: volume (swipe verticale)
+                            inZone3 && abs(dy) > abs(dx) -> GestureType.VOLUME
+                            // Zona 4: luminosità (swipe verticale)
+                            inZone4 && abs(dy) > abs(dx) -> GestureType.BRIGHTNESS
                             else -> GestureType.NONE
                         }
                     }
