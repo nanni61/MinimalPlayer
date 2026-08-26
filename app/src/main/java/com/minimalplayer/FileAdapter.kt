@@ -88,14 +88,18 @@ class FileAdapter(
 
         if (entry.isDirectory) {
             holder.tvIcon.setOnClickListener { onClick(entry) }
-            holder.layoutText?.setOnClickListener { onClick(entry) }
+            holder.tvName.setOnClickListener { onClick(entry) }
+            holder.tvMeta?.setOnClickListener { onClick(entry) }
             holder.tvIcon.setOnLongClickListener(null)
-            holder.layoutText?.setOnLongClickListener(null)
+            holder.tvName.setOnLongClickListener(null)
+            holder.tvMeta?.setOnLongClickListener(null)
         } else {
             holder.tvIcon.setOnClickListener(null)
-            holder.layoutText?.setOnClickListener(null)
+            holder.tvName.setOnClickListener(null)
+            holder.tvMeta?.setOnClickListener(null)
             holder.tvIcon.setOnLongClickListener { onClick(entry); true }
-            holder.layoutText?.setOnLongClickListener { onClick(entry); true }
+            holder.tvName.setOnLongClickListener { onClick(entry); true }
+            holder.tvMeta?.setOnLongClickListener { onClick(entry); true }
         }
 
         holder.itemView.setOnClickListener(null)
