@@ -14,7 +14,6 @@ data class FileEntry(
     val isDirectory: Boolean,
     val size: Long = -1,
     val jellyfinId: String = "",
-    val extension: String = "",
     // Stato di visione letto da Jellyfin (UserData) — null = non disponibile
     val jellyfinPlayed: Boolean? = null,
     val jellyfinPositionMs: Long? = null   // posizione in ms, 0 = mai visto
@@ -158,18 +157,12 @@ class JellyfinClient {
 
                 // Per i video preferiamo il nome file reale (da Path) al titolo Jellyfin,
                 // che spesso arriva dai metadati/NFO e non corrisponde al filename su disco.
-                val name: String
-                val extension: String
-                if (isVideo) {
+                val name = if (isVideo) {
                     val path = item.optString("Path", "")
-                    val fileName = if (path.isNotEmpty()) {
-                        path.substringAfterLast('/').substringAfterLast('\\')
-                    } else jellyfinName
-                    name = fileName.substringBeforeLast('.', fileName)
-                    extension = if (fileName.contains('.')) fileName.substringAfterLast('.').uppercase() else ""
+                    if (path.isNotEmpty()) path.substringAfterLast('/').substringAfterLast('\\')
+                    else jellyfinName
                 } else {
-                    name = jellyfinName
-                    extension = ""
+                    jellyfinName
                 }
 
                 val streamUrl = if (isVideo) getStreamUrl(id) else ""
@@ -185,7 +178,6 @@ class JellyfinClient {
                     url = streamUrl,
                     isDirectory = isDir,
                     jellyfinId = id,
-                    extension = extension,
                     jellyfinPlayed = played,
                     jellyfinPositionMs = if (isVideo) positionMs else null
                 ))
