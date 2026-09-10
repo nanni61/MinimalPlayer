@@ -14,6 +14,7 @@ data class FileEntry(
     val isDirectory: Boolean,
     val size: Long = -1,
     val jellyfinId: String = "",
+    val extension: String = "",
     // Stato di visione letto da Jellyfin (UserData) — null = non disponibile
     val jellyfinPlayed: Boolean? = null,
     val jellyfinPositionMs: Long? = null   // posizione in ms, 0 = mai visto
@@ -43,6 +44,9 @@ class JellyfinClient {
 
     private val deviceId = "MinimalPlayer-Android-001"
 
+    // Jellyfin 12 ha rimosso l'header legacy "X-Emby-Authorization" e la query
+    // "api_key" minuscola. Ora è supportato solo l'header standard "Authorization"
+    // con schema MediaBrowser, e la query "ApiKey" (A maiuscola) come alternativa.
     private fun authHeader(): String {
         return if (accessToken.isEmpty()) {
             """MediaBrowser Client="MinimalPlayer", Device="Android", DeviceId="$deviceId", Version="1.0""""
@@ -65,13 +69,14 @@ class JellyfinClient {
             val request = Request.Builder()
                 .url(url)
                 .post(body.toRequestBody("application/json".toMediaType()))
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .header("Content-Type", "application/json")
                 .build()
 
             val response = client.newCall(request).execute()
             if (!response.isSuccessful) {
-                return Result.failure(Exception("Autenticazione fallita: HTTP ${response.code}"))
+                val errorBody = response.body?.string() ?: "(corpo vuoto)"
+                return Result.failure(Exception("Autenticazione fallita: HTTP ${response.code} — $errorBody"))
             }
 
             val json = JSONObject(response.body?.string() ?: "{}")
@@ -91,7 +96,7 @@ class JellyfinClient {
 
             val request = Request.Builder()
                 .url(url)
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
@@ -134,7 +139,7 @@ class JellyfinClient {
 
             val request = Request.Builder()
                 .url(url)
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
@@ -157,12 +162,18 @@ class JellyfinClient {
 
                 // Per i video preferiamo il nome file reale (da Path) al titolo Jellyfin,
                 // che spesso arriva dai metadati/NFO e non corrisponde al filename su disco.
-                val name = if (isVideo) {
+                val name: String
+                val extension: String
+                if (isVideo) {
                     val path = item.optString("Path", "")
-                    if (path.isNotEmpty()) path.substringAfterLast('/').substringAfterLast('\\')
-                    else jellyfinName
+                    val fileName = if (path.isNotEmpty()) {
+                        path.substringAfterLast('/').substringAfterLast('\\')
+                    } else jellyfinName
+                    name = fileName.substringBeforeLast('.', fileName)
+                    extension = if (fileName.contains('.')) fileName.substringAfterLast('.').uppercase() else ""
                 } else {
-                    jellyfinName
+                    name = jellyfinName
+                    extension = ""
                 }
 
                 val streamUrl = if (isVideo) getStreamUrl(id) else ""
@@ -178,6 +189,7 @@ class JellyfinClient {
                     url = streamUrl,
                     isDirectory = isDir,
                     jellyfinId = id,
+                    extension = extension,
                     jellyfinPlayed = played,
                     jellyfinPositionMs = if (isVideo) positionMs else null
                 ))
@@ -190,9 +202,11 @@ class JellyfinClient {
     }
 
     // ── URL stream diretto ────────────────────────────────────────────────────
+    // Jellyfin 12: la query "api_key" minuscola è stata rimossa insieme agli altri
+    // metodi legacy. Va usata "ApiKey" (A maiuscola).
 
     fun getStreamUrl(itemId: String): String {
-        return "$baseUrl/Videos/$itemId/stream?static=true&api_key=$accessToken"
+        return "$baseUrl/Videos/$itemId/stream?static=true&ApiKey=$accessToken"
     }
 
     // ── Sottotitoli: lista tracce ─────────────────────────────────────────────
@@ -204,7 +218,7 @@ class JellyfinClient {
             val request = Request.Builder()
                 .url(url)
                 .post("{}".toRequestBody("application/json".toMediaType()))
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
@@ -230,7 +244,7 @@ class JellyfinClient {
                 val title = stream.optString("DisplayTitle",
                     stream.optString("Title", language))
 
-                val subUrl = "$baseUrl/Videos/$itemId/Subtitles/$index/0/Stream.srt?api_key=$accessToken"
+                val subUrl = "$baseUrl/Videos/$itemId/Subtitles/$index/0/Stream.srt?ApiKey=$accessToken"
 
                 subtitles.add(SubtitleTrack(
                     index = index,
@@ -253,7 +267,7 @@ class JellyfinClient {
 
             val request = Request.Builder()
                 .url(track.url)
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             val response = client.newCall(request).execute()
@@ -286,7 +300,7 @@ class JellyfinClient {
             val request = Request.Builder()
                 .url("$baseUrl/Sessions/Playing")
                 .post(body.toRequestBody("application/json".toMediaType()))
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             client.newCall(request).execute().close()
@@ -307,7 +321,7 @@ class JellyfinClient {
             val request = Request.Builder()
                 .url("$baseUrl/Sessions/Playing/Progress")
                 .post(body.toRequestBody("application/json".toMediaType()))
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             client.newCall(request).execute().close()
@@ -327,7 +341,7 @@ class JellyfinClient {
             val request = Request.Builder()
                 .url("$baseUrl/Sessions/Playing/Stopped")
                 .post(body.toRequestBody("application/json".toMediaType()))
-                .header("X-Emby-Authorization", authHeader())
+                .header("Authorization", authHeader())
                 .build()
 
             client.newCall(request).execute().close()
