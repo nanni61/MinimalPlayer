@@ -114,7 +114,7 @@ class FileBrowserActivity : AppCompatActivity() {
                     navStack.clear()
                     navStack.addLast(Pair("Librerie", "root"))
                     updatePathDisplay()
-                    showEntries(entries)
+                    showEntries(entries, isRootView = true)
                 }
             }.onFailure {
                 Toast.makeText(this@FileBrowserActivity, "Errore: ${it.message}", Toast.LENGTH_LONG).show()
@@ -146,9 +146,14 @@ class FileBrowserActivity : AppCompatActivity() {
         }
     }
 
-    private fun showEntries(entries: List<FileEntry>) {
+    private fun showEntries(entries: List<FileEntry>, isRootView: Boolean = false) {
         binding.recyclerView.visibility = View.VISIBLE
-        binding.recyclerView.adapter = FileAdapter(entries, resumeManager) { onEntryClicked(it) }
+        binding.recyclerView.adapter = FileAdapter(
+            entries = entries,
+            resumeManager = resumeManager,
+            onClick = { onEntryClicked(it) },
+            isRootView = isRootView
+        )
         binding.recyclerView.post {
             binding.recyclerView.requestFocus()
             binding.recyclerView.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
