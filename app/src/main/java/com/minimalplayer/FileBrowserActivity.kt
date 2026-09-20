@@ -2,6 +2,8 @@ package com.minimalplayer
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Process
+import android.view.KeyEvent
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -22,25 +24,33 @@ class FileBrowserActivity : AppCompatActivity() {
 
     private val navStack = ArrayDeque<Pair<String, String>>()
 
+    // Salvate per poter ri-autenticare in automatico se il token scade
+    // mentre l'app è rimasta in background.
+    private var storedUsername = ""
+    private var storedPassword = ""
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityFileBrowserBinding.inflate(layoutInflater)
         setContentView(binding.root)
         resumeManager = ResumeManager(this)
 
-        val baseUrl     = intent.getStringExtra("base_url") ?: ""
-        val username    = intent.getStringExtra("username") ?: ""
-        val password    = intent.getStringExtra("password") ?: ""
-        val accessToken = intent.getStringExtra("access_token") ?: ""
-        val userId      = intent.getStringExtra("user_id") ?: ""
+        val baseUrl = intent.getStringExtra("base_url") ?: ""
+        storedUsername = intent.getStringExtra("username") ?: ""
+        storedPassword = intent.getStringExtra("password") ?: ""
 
         jellyfin = JellyfinClient()
         jellyfin.baseUrl = baseUrl
 
         binding.recyclerView.layoutManager = LinearLayoutManager(this)
-        binding.recyclerView.addItemDecoration(
-            DividerItemDecoration(this, DividerItemDecoration.VERTICAL)
-        )
+        binding.recyclerView.addItemDecoration(DividerItemDecoration(this, DividerItemDecoration.VERTICAL))
+
+        // Garantisce che i bottoni della toolbar siano sempre raggiungibili col D-pad,
+        // indipendentemente da come sono dichiarati nel layout XML.
+        listOf(binding.btnBack, binding.btnRefresh, binding.btnSettings, binding.btnExit).forEach {
+            it.isFocusable = true
+            it.isFocusableInTouchMode = true
+        }
 
         binding.btnBack.setOnClickListener { navigateBack() }
         binding.btnRefresh.setOnClickListener { refresh() }
@@ -49,67 +59,68 @@ class FileBrowserActivity : AppCompatActivity() {
                 .edit().remove("password").putBoolean("remember_me", false).apply()
             finish()
         }
-        binding.btnExit.setOnClickListener { finishAffinity() }
+        binding.btnExit.setOnClickListener {
+            // finishAffinity() chiude le Activity, ma Android può comunque tenere
+            // il processo in cache. killProcess forza l'uscita completa, così la
+            // prossima apertura riparte sempre con un token fresco.
+            finishAffinity()
+            Process.killProcess(Process.myPid())
+        }
 
         lifecycleScope.launch {
-            binding.progressBar.visibility = View.VISIBLE
-
-            if (accessToken.isNotEmpty() && userId.isNotEmpty()) {
-                // Token già disponibile — nessuna ri-autenticazione necessaria
-                jellyfin.accessToken = accessToken
-                jellyfin.userId = userId
-            } else if (username.isNotEmpty()) {
-                // Fallback: autentica se non abbiamo ricevuto il token
-                val result = withContext(Dispatchers.IO) {
-                    jellyfin.authenticate(username, password)
-                }
+            if (storedUsername.isNotEmpty()) {
+                binding.progressBar.visibility = View.VISIBLE
+                val result = withContext(Dispatchers.IO) { jellyfin.authenticate(storedUsername, storedPassword) }
                 result.onFailure {
-                    Toast.makeText(this@FileBrowserActivity,
-                        "Login fallito: ${it.message}", Toast.LENGTH_LONG).show()
-                    finish()
-                    return@launch
+                    Toast.makeText(this@FileBrowserActivity, "Login fallito: ${it.message}", Toast.LENGTH_LONG).show()
+                    finish(); return@launch
                 }
             }
-
-            // Procede solo dopo che userId è garantito impostato
-            doLoadViews()
+            loadViews()
         }
     }
 
     private fun refresh() {
-        if (navStack.size <= 1) {
-            lifecycleScope.launch { doLoadViews() }
-        } else {
-            val (_, id) = navStack.last()
-            loadItems(id)
-        }
+        if (navStack.size <= 1) loadViews()
+        else loadItems(navStack.last().second)
     }
 
-    private suspend fun doLoadViews() {
+    // Un errore 401 (token scaduto/non valido) attiva una ri-autenticazione
+    // silenziosa seguita da un unico retry della stessa chiamata.
+    private fun isAuthError(e: Throwable?): Boolean =
+        e?.message?.contains("401") == true
+
+    private suspend fun reauthenticate(): Boolean {
+        if (storedUsername.isEmpty()) return false
+        val result = jellyfin.authenticate(storedUsername, storedPassword)
+        return result.isSuccess
+    }
+
+    private fun loadViews() {
         binding.progressBar.visibility = View.VISIBLE
         binding.tvEmpty.visibility = View.GONE
         binding.recyclerView.visibility = View.GONE
 
-        val result = withContext(Dispatchers.IO) { jellyfin.getViews() }
-        binding.progressBar.visibility = View.GONE
-        result.onSuccess { entries ->
-            if (entries.isEmpty()) {
-                binding.tvEmpty.visibility = View.VISIBLE
-            } else {
-                navStack.clear()
-                navStack.addLast(Pair("Librerie", "root"))
-                updatePathDisplay()
-                showEntries(entries, isRootView = true)
+        lifecycleScope.launch {
+            var result = withContext(Dispatchers.IO) { jellyfin.getViews() }
+            if (result.isFailure && isAuthError(result.exceptionOrNull())) {
+                val reauthed = withContext(Dispatchers.IO) { reauthenticate() }
+                if (reauthed) result = withContext(Dispatchers.IO) { jellyfin.getViews() }
             }
-        }.onFailure {
-            Toast.makeText(this@FileBrowserActivity,
-                "Errore: ${it.message}", Toast.LENGTH_LONG).show()
-            binding.tvEmpty.visibility = View.VISIBLE
+            binding.progressBar.visibility = View.GONE
+            result.onSuccess { entries ->
+                if (entries.isEmpty()) binding.tvEmpty.visibility = View.VISIBLE
+                else {
+                    navStack.clear()
+                    navStack.addLast(Pair("Librerie", "root"))
+                    updatePathDisplay()
+                    showEntries(entries)
+                }
+            }.onFailure {
+                Toast.makeText(this@FileBrowserActivity, "Errore: ${it.message}", Toast.LENGTH_LONG).show()
+                binding.tvEmpty.visibility = View.VISIBLE
+            }
         }
-    }
-
-    private fun loadViews() {
-        lifecycleScope.launch { doLoadViews() }
     }
 
     private fun loadItems(parentId: String) {
@@ -119,56 +130,48 @@ class FileBrowserActivity : AppCompatActivity() {
         updatePathDisplay()
 
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { jellyfin.getItems(parentId) }
+            var result = withContext(Dispatchers.IO) { jellyfin.getItems(parentId) }
+            if (result.isFailure && isAuthError(result.exceptionOrNull())) {
+                val reauthed = withContext(Dispatchers.IO) { reauthenticate() }
+                if (reauthed) result = withContext(Dispatchers.IO) { jellyfin.getItems(parentId) }
+            }
             binding.progressBar.visibility = View.GONE
             result.onSuccess { entries ->
                 if (entries.isEmpty()) binding.tvEmpty.visibility = View.VISIBLE
                 else showEntries(entries)
             }.onFailure {
-                Toast.makeText(this@FileBrowserActivity,
-                    "Errore: ${it.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@FileBrowserActivity, "Errore: ${it.message}", Toast.LENGTH_LONG).show()
                 binding.tvEmpty.visibility = View.VISIBLE
             }
         }
     }
 
-    private fun showEntries(entries: List<FileEntry>, isRootView: Boolean = false) {
+    private fun showEntries(entries: List<FileEntry>) {
         binding.recyclerView.visibility = View.VISIBLE
-        binding.recyclerView.adapter = FileAdapter(entries, resumeManager, onClick = { entry ->
-            onEntryClicked(entry)
-        }, isRootView = isRootView)
+        binding.recyclerView.adapter = FileAdapter(entries, resumeManager) { onEntryClicked(it) }
+        binding.recyclerView.post {
+            binding.recyclerView.requestFocus()
+            binding.recyclerView.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
+        }
     }
 
     private fun onEntryClicked(entry: FileEntry) {
         if (entry.isDirectory) {
             navStack.addLast(Pair(entry.name, entry.jellyfinId))
             loadItems(entry.jellyfinId)
-        } else {
-            openVideo(entry)
-        }
+        } else openVideo(entry)
     }
 
     private fun openVideo(entry: FileEntry) {
-        val savedPosition: Long = when {
-            entry.jellyfinPositionMs != null && entry.jellyfinPositionMs > 10_000L ->
-                entry.jellyfinPositionMs
-            else ->
-                resumeManager.getPosition(entry.url)
-        }
-
+        val savedPosition = resumeManager.getPosition(entry.url)
         if (savedPosition > 10_000L) {
             AlertDialog.Builder(this, com.google.android.material.R.style.ThemeOverlay_MaterialComponents_Dialog_Alert)
                 .setTitle(entry.name)
                 .setMessage("Riprendere da ${resumeManager.formatPosition(savedPosition)}?")
                 .setPositiveButton("Riprendi") { _, _ -> startPlayer(entry, savedPosition) }
-                .setNegativeButton("Ricomincia") { _, _ ->
-                    resumeManager.remove(entry.url)
-                    startPlayer(entry, 0L)
-                }
+                .setNegativeButton("Ricomincia") { _, _ -> resumeManager.remove(entry.url); startPlayer(entry, 0L) }
                 .show()
-        } else {
-            startPlayer(entry, 0L)
-        }
+        } else startPlayer(entry, 0L)
     }
 
     private fun startPlayer(entry: FileEntry, startPositionMs: Long) {
@@ -187,9 +190,7 @@ class FileBrowserActivity : AppCompatActivity() {
             navStack.removeLast()
             val (_, id) = navStack.last()
             if (id == "root") loadViews() else loadItems(id)
-        } else {
-            finish()
-        }
+        } else finish()
     }
 
     private fun updatePathDisplay() {
@@ -197,18 +198,38 @@ class FileBrowserActivity : AppCompatActivity() {
         binding.btnBack.visibility = if (navStack.size > 1) View.VISIBLE else View.GONE
     }
 
-    override fun onBackPressed() {
-        if (navStack.size > 1) {
-            navStack.removeLast()
-            val (_, id) = navStack.last()
-            if (id == "root") loadViews() else loadItems(id)
-        } else {
-            super.onBackPressed()
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (navStack.size > 1) { navigateBack(); return true }
         }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    // Il focus-search automatico di Android a volte non trova la barra in alto
+    // partendo dalla RecyclerView. Se il focus è sulla prima riga della lista e
+    // viene premuto "Su", lo spostiamo esplicitamente su un bottone della toolbar.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            val focused = currentFocus
+            if (focused != null) {
+                val position = binding.recyclerView.getChildAdapterPosition(focused)
+                if (position == 0) {
+                    val target = if (binding.btnBack.visibility == View.VISIBLE) {
+                        binding.btnBack
+                    } else {
+                        binding.btnRefresh
+                    }
+                    target.requestFocus()
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onResume() {
         super.onResume()
-        refresh()
+        binding.recyclerView.adapter?.notifyDataSetChanged()
+        binding.recyclerView.post { binding.recyclerView.requestFocus() }
     }
 }
