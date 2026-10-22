@@ -29,6 +29,10 @@ class FileBrowserActivity : AppCompatActivity() {
     private var storedUsername = ""
     private var storedPassword = ""
 
+    // true quando l'utente vuole uscire davvero: alla distruzione dell'Activity
+    // il processo viene terminato, così nulla resta vivo in background.
+    private var exiting = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityFileBrowserBinding.inflate(layoutInflater)
@@ -59,13 +63,7 @@ class FileBrowserActivity : AppCompatActivity() {
                 .edit().remove("password").putBoolean("remember_me", false).apply()
             finish()
         }
-        binding.btnExit.setOnClickListener {
-            // finishAffinity() chiude le Activity, ma Android può comunque tenere
-            // il processo in cache. killProcess forza l'uscita completa, così la
-            // prossima apertura riparte sempre con un token fresco.
-            finishAffinity()
-            Process.killProcess(Process.myPid())
-        }
+        binding.btnExit.setOnClickListener { exitApp() }
 
         lifecycleScope.launch {
             if (storedUsername.isNotEmpty()) {
@@ -78,6 +76,18 @@ class FileBrowserActivity : AppCompatActivity() {
             }
             loadViews()
         }
+    }
+
+    // Uscita completa: chiude tutte le Activity, toglie l'app dalle app recenti
+    // e (in onDestroy) termina il processo.
+    private fun exitApp() {
+        exiting = true
+        finishAndRemoveTask()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (exiting) Process.killProcess(Process.myPid())
     }
 
     private fun refresh() {
@@ -195,7 +205,7 @@ class FileBrowserActivity : AppCompatActivity() {
             navStack.removeLast()
             val (_, id) = navStack.last()
             if (id == "root") loadViews() else loadItems(id)
-        } else finish()
+        } else exitApp()
     }
 
     private fun updatePathDisplay() {
@@ -205,7 +215,9 @@ class FileBrowserActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (navStack.size > 1) { navigateBack(); return true }
+            // Dentro una cartella: sale di un livello. Dalla radice: uscita completa.
+            if (navStack.size > 1) navigateBack() else exitApp()
+            return true
         }
         return super.onKeyDown(keyCode, event)
     }
